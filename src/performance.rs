@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// 性能优化配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,7 +271,8 @@ impl PerformanceOptimizer {
         let optimized_voltage = (base_voltage as f64 * self.config.hashrate_optimization.voltage_hashrate_factor) as u32;
         device_config.voltage = optimized_voltage.min(1200).max(800); // 限制在合理范围内
 
-        info!("⚡ 设备 {} 性能优化: 频率 {}MHz -> {}MHz, 电压 {}mV -> {}mV",
+        // 对于软算法核心，频率和电压设置是无意义的，只记录调试信息
+        debug!("⚡ 设备 {} 性能优化配置: 频率 {}MHz -> {}MHz, 电压 {}mV -> {}mV (软算法核心不支持硬件级别设置)",
               device_id, base_frequency, device_config.frequency, base_voltage, device_config.voltage);
     }
 }

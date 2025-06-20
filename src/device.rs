@@ -321,7 +321,7 @@ impl MiningDevice for SoftwareDevice {
 
     /// 初始化设备
     async fn initialize(&mut self, config: DeviceConfig) -> Result<(), DeviceError> {
-        info!("初始化软算法设备 {}", self.device_id());
+        debug!("初始化软算法设备 {}", self.device_id());
 
         // 更新配置
         {
@@ -487,56 +487,24 @@ impl MiningDevice for SoftwareDevice {
 
     /// 设置频率
     async fn set_frequency(&mut self, frequency: u32) -> Result<(), DeviceError> {
-        info!("设置软算法设备 {} 频率为 {} MHz", self.device_id(), frequency);
+        // 软算法核心不支持硬件级别的频率设置
+        warn!("软算法设备 {} 不支持频率设置 (请求: {} MHz)，CPU挖矿无法调整硬件频率",
+              self.device_id(), frequency);
 
-        {
-            let mut config = self.config.write().map_err(|e| {
-                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
-            })?;
-            config.frequency = frequency;
-        }
-
-        // 更新设备信息
-        {
-            let mut info = self.device_info.write().map_err(|e| {
-                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
-            })?;
-            info.update_frequency(frequency);
-        }
-
-        // 根据频率调整目标算力
-        let freq_factor = frequency as f64 / 600.0; // 基准频率600MHz
-        self.target_hashrate = self.target_hashrate * freq_factor;
-
-        // 更新温度
-        self.update_temperature()?;
-
-        Ok(())
+        Err(DeviceError::hardware_error(
+            "软算法核心不支持频率设置，CPU挖矿无法调整硬件频率".to_string()
+        ))
     }
 
     /// 设置电压
     async fn set_voltage(&mut self, voltage: u32) -> Result<(), DeviceError> {
-        info!("设置软算法设备 {} 电压为 {} mV", self.device_id(), voltage);
+        // 软算法核心不支持硬件级别的电压设置
+        warn!("软算法设备 {} 不支持电压设置 (请求: {} mV)，CPU挖矿无法调整硬件电压",
+              self.device_id(), voltage);
 
-        {
-            let mut config = self.config.write().map_err(|e| {
-                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
-            })?;
-            config.voltage = voltage;
-        }
-
-        // 更新设备信息
-        {
-            let mut info = self.device_info.write().map_err(|e| {
-                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
-            })?;
-            info.update_voltage(voltage);
-        }
-
-        // 更新温度
-        self.update_temperature()?;
-
-        Ok(())
+        Err(DeviceError::hardware_error(
+            "软算法核心不支持电压设置，CPU挖矿无法调整硬件电压".to_string()
+        ))
     }
 
     /// 设置风扇速度
