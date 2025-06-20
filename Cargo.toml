@@ -34,7 +34,7 @@ async-trait = "0.1"
 fastrand = "2.0"
 
 # CPU affinity and system info
-core_affinity = "0.8"
+core_affinity = { version = "0.8", optional = true }
 num_cpus = "1.16"
 sysinfo = "0.30"
 
@@ -49,17 +49,65 @@ tracing = "0.1"
 version = "11.0"
 optional = true
 
+[dependencies.num-bigint]
+version = "0.4"
+optional = true
+
+[dependencies.num-traits]
+version = "0.2"
+optional = true
+
+[dependencies.pprof]
+version = "0.13"
+optional = true
+
+[dependencies.mimalloc]
+version = "0.1"
+optional = true
+
 [features]
-default = ["simd-optimizations", "thermal-management", "power-management"]
+default = ["simd-optimizations", "thermal-management", "power-management", "cpu-affinity", "temperature-monitoring"]
+
+# SIMD优化 - 启用向量化指令
 simd-optimizations = []
+
+# 热管理 - 监控CPU温度和频率
 thermal-management = []
+
+# 温度监控 - 启用真实温度读取功能
+temperature-monitoring = []
+
+# 电源管理 - 监控和控制功耗
 power-management = []
+
+# CPU绑定 - 将挖矿线程绑定到特定CPU核心
+cpu-affinity = ["core_affinity"]
+
+# 高级CPU检测 - 详细的CPU特性检测
 advanced-cpu-detection = ["raw-cpuid"]
-experimental = []
+
+# 调试日志 - 详细的挖矿过程日志
+debug-logging = []
+
+# 性能分析 - 启用性能监控和分析
+profiling = ["pprof"]
+
+# 高级数学优化 - 使用优化的数学库
+advanced-math = ["num-bigint", "num-traits"]
+
+# 内存优化 - 优化内存分配和使用
+memory-optimized = ["mimalloc"]
+
+# 网络优化 - 优化网络通信
+network-optimized = ["tokio/net"]
+
+# 实验性优化 - 实验性的性能优化
+experimental = ["simd-optimizations", "advanced-math", "memory-optimized", "advanced-cpu-detection"]
 
 [dev-dependencies]
 tokio-test = "0.4"
 mockall = "0.12"
+tracing-subscriber = "0.3"
 
 [lib]
 name = "cgminer_cpu_btc_core"
@@ -67,3 +115,133 @@ crate-type = ["rlib"]  # 只生成rlib，避免LTO冲突
 
 # 如果需要动态库，可以单独构建
 # crate-type = ["cdylib", "rlib"]
+
+# CPU挖矿专用优化配置
+[profile.release]
+# 最高优化级别 - CPU挖矿需要极致性能
+opt-level = 3
+# 链接时优化 - 提高CPU算法性能
+lto = "fat"
+# 单个代码生成单元 - 最大化内联优化
+codegen-units = 1
+# 崩溃时直接终止 - 减少开销
+panic = "abort"
+# 启用调试信息用于性能分析
+debug = 1
+# 去除未使用的代码
+strip = "symbols"
+# 禁用溢出检查 - CPU挖矿需要最大性能
+overflow-checks = false
+# 静态编译
+rpath = false
+
+# 开发版本配置 - 保持合理的编译速度
+[profile.dev]
+opt-level = 2  # 开发时也需要一定优化
+debug = true
+overflow-checks = true
+incremental = true
+
+# 性能测试配置 - CPU挖矿基准测试
+[profile.bench]
+inherits = "release"
+debug = true
+lto = "thin"  # 基准测试使用thin LTO平衡编译时间
+
+# 测试配置
+[profile.test]
+opt-level = 2  # 测试时也需要优化
+debug = true
+overflow-checks = true
+
+# CPU挖矿专用依赖包优化说明
+# 以下配置针对关键库进行特殊优化
+
+# CPU挖矿专用依赖包优化
+# 针对关键库进行特殊优化配置
+
+# SHA-256 哈希库优化
+[profile.release.package.sha2]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.sha2]
+opt-level = 3
+codegen-units = 1
+
+# 并行计算库优化
+[profile.release.package.rayon]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.rayon]
+opt-level = 3
+codegen-units = 1
+
+# CPU绑定库优化
+[profile.release.package.core_affinity]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.core_affinity]
+opt-level = 3
+codegen-units = 1
+
+# 数学运算库优化
+[profile.release.package.num-bigint]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.num-bigint]
+opt-level = 3
+codegen-units = 1
+
+# 序列化库优化
+[profile.release.package.serde]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.serde]
+opt-level = 2
+codegen-units = 1
+
+# 异步运行时优化
+[profile.release.package.tokio]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.tokio]
+opt-level = 2
+codegen-units = 1
+
+# 内存分配器优化
+[profile.release.package.mimalloc]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.mimalloc]
+opt-level = 3
+codegen-units = 1
+
+# 时间库优化
+[profile.release.package.chrono]
+opt-level = 3
+codegen-units = 1
+
+[profile.dev.package.chrono]
+opt-level = 2
+codegen-units = 1
+
+# 日志库优化
+[profile.release.package.tracing]
+opt-level = 2
+codegen-units = 1
+
+[profile.dev.package.tracing]
+opt-level = 1
+codegen-units = 1
+
+# 示例程序
+[[example]]
+name = "temperature_demo"
+path = "examples/temperature_demo.rs"

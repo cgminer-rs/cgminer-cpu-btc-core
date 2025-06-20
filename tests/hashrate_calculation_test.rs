@@ -1,8 +1,8 @@
 //! 测试基于实际哈希次数的算力计算逻辑
 
-use cgminer_core::{DeviceInfo, DeviceConfig, DeviceStats, MiningDevice, Work};
-use cgminer_s_btc_core::device::SoftwareDevice;
-use std::time::{Duration, SystemTime};
+use cgminer_core::{DeviceInfo, DeviceConfig, MiningDevice, Work};
+use cgminer_cpu_btc_core::device::SoftwareDevice;
+use std::time::Duration;
 use tokio::time::sleep;
 
 /// 创建测试用的设备
@@ -28,9 +28,9 @@ async fn create_test_device() -> SoftwareDevice {
 /// 创建测试用的工作（高难度，不容易找到解）
 fn create_test_work() -> Work {
     Work::new(
-        1,
-        vec![0u8; 80], // 80字节的区块头
-        vec![0x00u8; 32], // 目标难度（几乎不可能满足，确保执行完整批次）
+        "1".to_string(),
+        [0x00u8; 32], // 目标难度（几乎不可能满足，确保执行完整批次）
+        [0u8; 80], // 80字节的区块头
         1.0,
     )
 }
@@ -38,9 +38,9 @@ fn create_test_work() -> Work {
 /// 创建容易找到解的测试工作
 fn create_easy_test_work() -> Work {
     Work::new(
-        1,
-        vec![0u8; 80], // 80字节的区块头
-        vec![0xFFu8; 32], // 目标难度（很容易满足）
+        "1".to_string(),
+        [0xFFu8; 32], // 目标难度（很容易满足）
+        [0u8; 80], // 80字节的区块头
         1.0,
     )
 }

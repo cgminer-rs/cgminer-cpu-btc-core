@@ -9,6 +9,7 @@ use cgminer_core::{
 use crate::device::SoftwareDevice;
 use crate::performance::PerformanceOptimizer;
 use crate::cpu_affinity::{CpuAffinityManager, CpuAffinityStrategy};
+// 平台优化模块
 use crate::platform_optimization::PlatformOptimization;
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -44,11 +45,11 @@ impl SoftwareMiningCore {
     pub fn new(name: String) -> Self {
         let core_info = CoreInfo::new(
             name.clone(),
-            cgminer_core::CoreType::Custom("software".to_string()),
+            cgminer_core::CoreType::Custom("optimized_cpu".to_string()),
             crate::VERSION.to_string(),
-            "软算法挖矿核心，使用真实的SHA256算法进行CPU挖矿计算".to_string(),
+            "优化CPU挖矿核心，支持SIMD加速、智能温度管理和动态负载均衡".to_string(),
             "CGMiner Rust Team".to_string(),
-            vec!["software".to_string(), "cpu".to_string()],
+            vec!["optimized_cpu".to_string(), "simd".to_string(), "cpu".to_string()],
         );
 
         let capabilities = CoreCapabilities {
@@ -78,9 +79,9 @@ impl SoftwareMiningCore {
             max_devices: Some(64), // 软算法核心支持最多64个设备
             supported_algorithms: vec!["SHA256".to_string(), "SHA256d".to_string()],
             cpu_capabilities: Some(CpuSpecificCapabilities {
-                simd_support: vec!["SSE".to_string(), "AVX".to_string()], // 基础SIMD支持
+                simd_support: vec!["SSE".to_string(), "AVX".to_string(), "AVX2".to_string(), "SHA".to_string()], // 优化SIMD支持
                 supports_cpu_affinity: true,  // 支持CPU绑定
-                supports_numa_awareness: false, // 基础版本不支持NUMA
+                supports_numa_awareness: true, // 优化版本支持NUMA
                 physical_cores: num_cpus::get_physical() as u32,
                 logical_cores: num_cpus::get() as u32,
                 cache_info: Some(CpuCacheInfo {
@@ -90,7 +91,7 @@ impl SoftwareMiningCore {
                     l3_kb: 8192,
                 }),
             }),
-            core_type: cgminer_core::CoreType::Custom("software".to_string()),
+            core_type: cgminer_core::CoreType::Custom("optimized_cpu".to_string()),
         };
 
         let stats = CoreStats::new(name);
@@ -139,7 +140,7 @@ impl SoftwareMiningCore {
             .and_then(|v| v.as_u64())
             .unwrap_or(1000) as u32;
 
-        info!("创建 {} 个软算法设备，算力范围: {:.2} - {:.2} GH/s",
+        info!("创建 {} 个优化CPU设备，算力范围: {:.2} - {:.2} GH/s",
               device_count,
               min_hashrate / 1_000_000_000.0,
               max_hashrate / 1_000_000_000.0);
@@ -263,7 +264,7 @@ impl SoftwareMiningCore {
         if let Ok(count_str) = std::env::var("CGMINER_SOFTWARE_DEVICE_COUNT") {
             if let Ok(count) = count_str.parse::<u32>() {
                 if count > 0 && count <= 1000 {
-                    info!("从环境变量读取软算法设备数量: {}", count);
+                    info!("从环境变量读取优化CPU设备数量: {}", count);
                     return count;
                 } else {
                     warn!("环境变量中的设备数量 {} 超出范围，使用配置文件值", count);
@@ -276,7 +277,7 @@ impl SoftwareMiningCore {
             if let Some(count) = device_count.as_u64() {
                 let count = count as u32;
                 if count > 0 && count <= 1000 {
-                    info!("从配置文件读取软算法设备数量: {}", count);
+                    info!("从配置文件读取优化CPU设备数量: {}", count);
                     return count;
                 } else {
                     warn!("配置文件中的设备数量 {} 超出范围，使用默认值", count);
@@ -285,7 +286,7 @@ impl SoftwareMiningCore {
         }
 
         // 3. 使用默认值
-        info!("使用默认软算法设备数量: 4");
+        info!("使用默认优化CPU设备数量: 4");
         4u32
     }
 
@@ -297,7 +298,7 @@ impl SoftwareMiningCore {
         if let Ok(count_str) = std::env::var("CGMINER_SOFTWARE_DEVICE_COUNT") {
             if let Ok(count) = count_str.parse::<u32>() {
                 if count > 0 && count <= 1000 {
-                    info!("从环境变量读取软算法设备数量: {}", count);
+                    info!("从环境变量读取优化CPU设备数量: {}", count);
                     return count;
                 } else {
                     warn!("环境变量中的设备数量 {} 超出范围，使用配置文件值", count);
@@ -311,7 +312,7 @@ impl SoftwareMiningCore {
                 if let Some(count) = device_count.as_u64() {
                     let count = count as u32;
                     if count > 0 && count <= 1000 {
-                        info!("从配置文件读取软算法设备数量: {}", count);
+                        info!("从配置文件读取优化CPU设备数量: {}", count);
                         return count;
                     } else {
                         warn!("配置文件中的设备数量 {} 超出范围，使用默认值", count);
@@ -321,7 +322,7 @@ impl SoftwareMiningCore {
         }
 
         // 3. 使用默认值
-        info!("使用默认软算法设备数量: 4");
+        info!("使用默认优化CPU设备数量: 4");
         4u32
     }
 }
@@ -340,7 +341,7 @@ impl MiningCore for SoftwareMiningCore {
 
     /// 初始化核心
     async fn initialize(&mut self, config: CoreConfig) -> Result<(), CoreError> {
-        info!("开始初始化软算法挖矿核心: {}", config.name);
+        info!("开始初始化优化CPU挖矿核心: {}", config.name);
         debug!("配置参数: {:?}", config.custom_params);
 
         // 打印平台优化信息
@@ -376,9 +377,9 @@ impl MiningCore for SoftwareMiningCore {
         }
 
         // 创建设备
-        debug!("开始创建软算法设备...");
+        debug!("开始创建优化CPU设备...");
         let devices = self.create_software_devices(&config).await?;
-        info!("软算法设备创建完成，共创建 {} 个设备", devices.len());
+        info!("优化CPU设备创建完成，共创建 {} 个设备", devices.len());
 
         // 存储设备
         {
@@ -415,13 +416,13 @@ impl MiningCore for SoftwareMiningCore {
         };
         debug!("最终设备数量: {}", device_count);
 
-        info!("软算法挖矿核心初始化完成");
+        info!("优化CPU挖矿核心初始化完成");
         Ok(())
     }
 
     /// 启动核心
     async fn start(&mut self) -> Result<(), CoreError> {
-        info!("启动软算法挖矿核心");
+        info!("启动优化CPU挖矿核心");
 
         {
             let mut running = self.running.write().map_err(|e| {
@@ -446,13 +447,13 @@ impl MiningCore for SoftwareMiningCore {
         }
 
         self.start_time = Some(SystemTime::now());
-        info!("软算法挖矿核心启动完成");
+        info!("优化CPU挖矿核心启动完成");
         Ok(())
     }
 
     /// 停止核心
     async fn stop(&mut self) -> Result<(), CoreError> {
-        info!("停止软算法挖矿核心");
+        info!("停止优化CPU挖矿核心");
 
         {
             let mut running = self.running.write().map_err(|e| {
@@ -471,13 +472,13 @@ impl MiningCore for SoftwareMiningCore {
             }
         }
 
-        info!("软算法挖矿核心已停止");
+        info!("优化CPU挖矿核心已停止");
         Ok(())
     }
 
     /// 重启核心
     async fn restart(&mut self) -> Result<(), CoreError> {
-        info!("重启软算法挖矿核心");
+        info!("重启优化CPU挖矿核心");
         self.stop().await?;
         tokio::time::sleep(Duration::from_secs(1)).await;
         self.start().await?;
@@ -486,7 +487,7 @@ impl MiningCore for SoftwareMiningCore {
 
     /// 扫描设备
     async fn scan_devices(&self) -> Result<Vec<DeviceInfo>, CoreError> {
-        debug!("扫描软算法设备");
+        debug!("扫描优化CPU设备");
 
         // 如果设备已经创建，返回现有设备信息
         let devices = self.devices.lock().await;

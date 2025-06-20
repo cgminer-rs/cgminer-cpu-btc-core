@@ -6,9 +6,11 @@ use cgminer_core::{
 };
 use crate::cpu_affinity::CpuAffinityManager;
 use crate::platform_optimization;
+use crate::temperature::{TemperatureManager, TemperatureConfig};
 use async_trait::async_trait;
 use sha2::{Sha256, Digest};
 use std::sync::{Arc, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 use tokio::sync::Mutex;
 use tokio::time::Instant;
@@ -38,6 +40,11 @@ pub struct SoftwareDevice {
     last_mining_time: Arc<RwLock<Option<Instant>>>,
     /// CPU绑定管理器
     cpu_affinity: Option<Arc<RwLock<CpuAffinityManager>>>,
+    /// 温度管理器
+    temperature_manager: Option<TemperatureManager>,
+    /// 缓存温度监控能力检查结果，避免重复检查和日志输出
+    temperature_capability_checked: Arc<AtomicBool>,
+    temperature_capability_supported: Arc<AtomicBool>,
 }
 
 impl SoftwareDevice {
@@ -52,6 +59,10 @@ impl SoftwareDevice {
         let device_id = device_info.id;
         let stats = DeviceStats::new(device_id);
 
+        // 创建温度管理器（仅在支持真实温度监控时）
+        let temp_config = TemperatureConfig::default();
+        let temperature_manager = Some(TemperatureManager::new(temp_config));
+
         Ok(Self {
             device_info: Arc::new(RwLock::new(device_info)),
             config: Arc::new(RwLock::new(config)),
@@ -64,6 +75,9 @@ impl SoftwareDevice {
             start_time: None,
             last_mining_time: Arc::new(RwLock::new(None)),
             cpu_affinity: None,
+            temperature_manager,
+            temperature_capability_checked: Arc::new(AtomicBool::new(false)),
+            temperature_capability_supported: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -79,6 +93,10 @@ impl SoftwareDevice {
         let device_id = device_info.id;
         let stats = DeviceStats::new(device_id);
 
+        // 创建温度管理器
+        let temp_config = TemperatureConfig::default();
+        let temperature_manager = Some(TemperatureManager::new(temp_config));
+
         Ok(Self {
             device_info: Arc::new(RwLock::new(device_info)),
             config: Arc::new(RwLock::new(config)),
@@ -91,6 +109,9 @@ impl SoftwareDevice {
             start_time: None,
             last_mining_time: Arc::new(RwLock::new(None)),
             cpu_affinity: Some(cpu_affinity),
+            temperature_manager,
+            temperature_capability_checked: Arc::new(AtomicBool::new(false)),
+            temperature_capability_supported: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -195,37 +216,87 @@ impl SoftwareDevice {
         Ok(found_solution)
     }
 
-    /// 更新设备温度（基于频率和电压模拟）
+    /// 更新设备温度（仅支持真实温度读取）
     fn update_temperature(&self) -> Result<(), DeviceError> {
         let config = self.config.read().map_err(|e| {
             DeviceError::hardware_error(format!("Failed to acquire read lock: {}", e))
         })?;
 
-        // 基于频率和电压计算模拟温度
-        let base_temp = 35.0; // 基础温度
-        let freq_factor = config.frequency as f32 / 600.0; // 基准频率600MHz
-        let voltage_factor = config.voltage as f32 / 900.0; // 基准电压900mV
+        // 尝试从温度管理器读取真实温度
+        if let Some(ref temp_manager) = self.temperature_manager {
+            if temp_manager.has_temperature_monitoring() {
+                match temp_manager.read_temperature() {
+                    Ok(temperature) => {
+                        debug!("设备 {} 读取到真实温度: {:.1}°C", self.device_id(), temperature);
 
-        let temp_increase = (freq_factor - 1.0) * 15.0 + (voltage_factor - 1.0) * 10.0;
-        let temperature = base_temp + temp_increase + fastrand::f32() * 5.0; // 添加随机波动
+                        // 更新设备信息中的温度
+                        {
+                            let mut info = self.device_info.write().map_err(|e| {
+                                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
+                            })?;
+                            info.update_temperature(temperature);
+                        }
 
-        // 更新设备信息中的温度
-        {
-            let mut info = self.device_info.write().map_err(|e| {
-                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
-            })?;
-            info.update_temperature(temperature);
-        }
-
-        // 更新统计信息中的温度
-        {
-            let mut stats = self.stats.write().map_err(|e| {
-                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
-            })?;
-            stats.temperature = Some(Temperature::new(temperature));
-            stats.voltage = Some(Voltage::new(config.voltage));
-            stats.frequency = Some(Frequency::new(config.frequency));
-            stats.fan_speed = config.fan_speed;
+                        // 更新统计信息中的温度
+                        {
+                            let mut stats = self.stats.write().map_err(|e| {
+                                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
+                            })?;
+                            stats.temperature = Some(Temperature::new(temperature));
+                            stats.voltage = Some(Voltage::new(config.voltage));
+                            stats.frequency = Some(Frequency::new(config.frequency));
+                            stats.fan_speed = config.fan_speed;
+                        }
+                    }
+                    Err(e) => {
+                        debug!("设备 {} 温度读取失败: {}", self.device_id(), e);
+                        // 不设置温度信息，让上层知道温度不可用
+                        {
+                            let mut stats = self.stats.write().map_err(|e| {
+                                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
+                            })?;
+                            stats.temperature = None; // 明确设置为None
+                            stats.voltage = Some(Voltage::new(config.voltage));
+                            stats.frequency = Some(Frequency::new(config.frequency));
+                            stats.fan_speed = config.fan_speed;
+                        }
+                    }
+                }
+            } else {
+                // 只在第一次检查时输出日志，避免重复日志
+                if !self.temperature_capability_checked.load(Ordering::Relaxed) {
+                    debug!("设备 {} 不支持温度监控", self.device_id());
+                    self.temperature_capability_checked.store(true, Ordering::Relaxed);
+                    self.temperature_capability_supported.store(false, Ordering::Relaxed);
+                }
+                // 不设置温度信息
+                {
+                    let mut stats = self.stats.write().map_err(|e| {
+                        DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
+                    })?;
+                    stats.temperature = None; // 明确设置为None
+                    stats.voltage = Some(Voltage::new(config.voltage));
+                    stats.frequency = Some(Frequency::new(config.frequency));
+                    stats.fan_speed = config.fan_speed;
+                }
+            }
+        } else {
+            // 只在第一次检查时输出日志，避免重复日志
+            if !self.temperature_capability_checked.load(Ordering::Relaxed) {
+                debug!("设备 {} 没有温度管理器", self.device_id());
+                self.temperature_capability_checked.store(true, Ordering::Relaxed);
+                self.temperature_capability_supported.store(false, Ordering::Relaxed);
+            }
+            // 不设置温度信息
+            {
+                let mut stats = self.stats.write().map_err(|e| {
+                    DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
+                })?;
+                stats.temperature = None; // 明确设置为None
+                stats.voltage = Some(Voltage::new(config.voltage));
+                stats.frequency = Some(Frequency::new(config.frequency));
+                stats.fan_speed = config.fan_speed;
+            }
         }
 
         Ok(())
@@ -270,6 +341,29 @@ impl MiningDevice for SoftwareDevice {
 
         // 更新温度
         self.update_temperature()?;
+
+        // 显示温度监控信息（只在初始化时显示一次）
+        if let Some(ref temp_manager) = self.temperature_manager {
+            if temp_manager.has_temperature_monitoring() {
+                info!("设备 {} 温度监控: ✅ 真实监控 ({})",
+                    self.device_id(),
+                    temp_manager.provider_info()
+                );
+                self.temperature_capability_checked.store(true, Ordering::Relaxed);
+                self.temperature_capability_supported.store(true, Ordering::Relaxed);
+            } else {
+                info!("设备 {} 温度监控: ❌ 不支持 ({})",
+                    self.device_id(),
+                    temp_manager.provider_info()
+                );
+                self.temperature_capability_checked.store(true, Ordering::Relaxed);
+                self.temperature_capability_supported.store(false, Ordering::Relaxed);
+            }
+        } else {
+            info!("设备 {} 温度监控: ❌ 未配置", self.device_id());
+            self.temperature_capability_checked.store(true, Ordering::Relaxed);
+            self.temperature_capability_supported.store(false, Ordering::Relaxed);
+        }
 
         info!("软算法设备 {} 初始化完成", self.device_id());
         Ok(())

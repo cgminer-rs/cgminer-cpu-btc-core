@@ -1,0 +1,205 @@
+# CPU BTC 挖矿核心专用编译配置
+# 针对CPU密集型SHA-256双重哈希算法的极致优化
+
+[build]
+# 使用所有CPU核心进行并行编译
+# jobs = 0  # 注释掉，让cargo自动检测
+
+# 平台特定的编译器标志 - CPU挖矿算法优化
+[target.aarch64-apple-darwin]
+# Mac M4 (Apple Silicon) CPU挖矿专用优化
+rustflags = [
+    # 使用Apple M1架构（M4兼容）
+    "-C", "target-cpu=apple-m1",
+    # 启用硬件加速特性 - 重点优化SHA-256和AES
+    "-C", "target-feature=+neon,+crypto,+aes,+sha2,+sha3,+crc",
+    # 最高优化级别
+    "-C", "opt-level=3",
+    # 单个代码生成单元 - 最大化内联优化
+    "-C", "codegen-units=1",
+    # 链接时优化 - 提高CPU算法性能 (注释掉避免与embed-bitcode冲突)
+    # "-C", "lto=fat",
+    # 禁用溢出检查 - CPU挖矿需要最大性能
+    "-C", "overflow-checks=off",
+    # 优化分支预测
+    "-C", "prefer-dynamic=no",
+    # 静态链接优化
+    "-C", "target-feature=+crt-static",
+]
+
+[target.x86_64-apple-darwin]
+# Intel Mac CPU挖矿优化
+rustflags = [
+    "-C", "target-cpu=native",
+    # 重点启用SHA和AES硬件指令集
+    "-C", "target-feature=+aes,+sha,+sse4.2,+avx2,+bmi2,+popcnt,+lzcnt",
+    "-C", "opt-level=3",
+    "-C", "codegen-units=1",
+    # "-C", "lto=fat",  # 注释掉避免与embed-bitcode冲突
+    "-C", "overflow-checks=off",
+    # Intel特定优化
+    "-C", "target-feature=+fma,+f16c",
+]
+
+[target.x86_64-unknown-linux-gnu]
+# Linux x86_64 CPU挖矿优化
+rustflags = [
+    "-C", "target-cpu=native",
+    # 启用所有可用的CPU优化特性 - 重点SHA和AES
+    "-C", "target-feature=+aes,+sha,+sse4.2,+avx2,+bmi2,+fma,+popcnt,+lzcnt,+adx",
+    "-C", "opt-level=3",
+    "-C", "codegen-units=1",
+    # 完整链接时优化 (注释掉避免与embed-bitcode冲突)
+    # "-C", "lto=fat",
+    "-C", "overflow-checks=off",
+    # Linux特定优化
+    "-C", "relocation-model=static",
+    "-C", "target-feature=+crt-static",
+]
+
+[target.aarch64-unknown-linux-gnu]
+# ARM64 Linux CPU挖矿优化
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "target-feature=+neon,+crypto,+aes,+sha2,+sha3,+crc",
+    "-C", "opt-level=3",
+    "-C", "codegen-units=1",
+    # "-C", "lto=fat",  # 注释掉避免与embed-bitcode冲突
+    "-C", "overflow-checks=off",
+]
+
+[target.x86_64-pc-windows-msvc]
+# Windows x86_64 CPU挖矿优化
+rustflags = [
+    "-C", "target-cpu=native",
+    "-C", "target-feature=+aes,+sha,+sse4.2,+avx2,+bmi2,+popcnt",
+    "-C", "opt-level=3",
+    "-C", "codegen-units=1",
+    # "-C", "lto=fat",  # 注释掉避免与embed-bitcode冲突
+    "-C", "overflow-checks=off",
+]
+
+# 环境变量设置 - CPU挖矿专用
+[env]
+# 启用CPU特定优化
+RUSTFLAGS = { value = "-C prefer-dynamic=no -C target-feature=+crt-static", force = false }
+# 启用并行编译
+CARGO_BUILD_JOBS = { value = "0", force = false }
+# CPU挖矿特定环境变量
+CPU_MINING_OPTIMIZED = { value = "1", force = false }
+# 启用SIMD优化
+RUST_TARGET_FEATURE = { value = "+simd128", force = false }
+# 数学库优化
+RUST_MATH_OPTIMIZED = { value = "1", force = false }
+
+# 别名定义 - CPU挖矿专用
+[alias]
+# CPU挖矿性能构建
+cpu-perf = "build --release --features=simd-optimizations,cpu-affinity,thermal-management"
+# CPU挖矿基准测试
+cpu-bench = "bench --features=simd-optimizations,cpu-affinity"
+# CPU挖矿调试构建
+cpu-debug = "build --features=simd-optimizations,debug-logging"
+# CPU挖矿测试
+cpu-test = "test --features=simd-optimizations,cpu-affinity --release"
+# CPU挖矿性能分析
+cpu-profile = "build --release --features=simd-optimizations,profiling"
+
+# 网络配置
+[net]
+retry = 3
+git-fetch-with-cli = true
+
+# HTTP 配置
+[http]
+multiplexing = true
+user-agent = "cgminer-cpu-btc-core-build"
+timeout = 30
+
+# CPU挖矿特定的包优化 - 关键加密库
+[profile.dev.build-override]
+opt-level = 3
+codegen-units = 1
+
+[profile.release.build-override]
+opt-level = 3
+codegen-units = 1
+
+# SHA-256 库优化
+[profile.dev.package.sha2]
+opt-level = 3
+codegen-units = 1
+
+[profile.release.package.sha2]
+opt-level = 3
+codegen-units = 1
+
+# AES 加密库优化
+[profile.dev.package.aes]
+opt-level = 3
+codegen-units = 1
+
+[profile.release.package.aes]
+opt-level = 3
+codegen-units = 1
+
+# 并行计算库优化
+[profile.dev.package.rayon]
+opt-level = 3
+codegen-units = 1
+
+[profile.release.package.rayon]
+opt-level = 3
+codegen-units = 1
+
+# 数学运算库优化
+[profile.dev.package.num-bigint]
+opt-level = 3
+codegen-units = 1
+
+[profile.release.package.num-bigint]
+opt-level = 3
+codegen-units = 1
+
+# 序列化库优化
+[profile.dev.package.serde]
+opt-level = 3
+codegen-units = 1
+
+[profile.release.package.serde]
+opt-level = 3
+codegen-units = 1
+
+# 时间库优化
+[profile.dev.package.chrono]
+opt-level = 2
+codegen-units = 1
+
+[profile.release.package.chrono]
+opt-level = 3
+codegen-units = 1
+
+# 异步运行时优化
+[profile.dev.package.tokio]
+opt-level = 2
+codegen-units = 1
+
+[profile.release.package.tokio]
+opt-level = 3
+codegen-units = 1
+
+# CPU绑定库优化
+[profile.dev.package.core_affinity]
+opt-level = 3
+codegen-units = 1
+
+[profile.release.package.core_affinity]
+opt-level = 3
+codegen-units = 1
+
+# 注释：CPU挖矿核心优化说明
+# 1. 重点优化SHA-256双重哈希算法
+# 2. 启用所有可用的CPU硬件加速特性
+# 3. 最大化内联优化和链接时优化
+# 4. 针对不同平台的CPU架构进行专门优化
+# 5. 优化关键加密和数学运算库

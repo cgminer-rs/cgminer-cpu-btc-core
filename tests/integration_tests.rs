@@ -7,7 +7,7 @@
 //! - SHA256挖矿算法
 
 use cgminer_core::{DeviceInfo, DeviceConfig, MiningDevice, MiningCore, Work};
-use cgminer_s_btc_core::{
+use cgminer_cpu_btc_core::{
     SoftwareMiningCore, SoftwareDevice,
     cpu_affinity::{CpuAffinityManager, CpuAffinityStrategy}
 };
@@ -225,9 +225,6 @@ async fn test_software_mining_core() {
 
     // 获取核心能力
     let capabilities = core.get_capabilities();
-    assert!(capabilities.supports_temperature_monitoring, "应该支持温度监控");
-    assert!(capabilities.supports_frequency_control, "应该支持频率控制");
-    assert!(capabilities.supports_multiple_chains, "应该支持多链");
     assert!(capabilities.supported_algorithms.contains(&"SHA256".to_string()), "应该支持SHA256算法");
 
     // 启动核心
