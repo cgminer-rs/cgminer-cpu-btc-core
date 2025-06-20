@@ -2,7 +2,9 @@
 
 use cgminer_core::{
     MiningCore, CoreInfo, CoreCapabilities, CoreConfig, CoreStats, CoreError,
-    DeviceInfo, MiningDevice, Work, MiningResult
+    DeviceInfo, MiningDevice, Work, MiningResult,
+    TemperatureCapabilities, VoltageCapabilities, FrequencyCapabilities,
+    FanCapabilities, CpuSpecificCapabilities, CpuCacheInfo
 };
 use crate::device::SoftwareDevice;
 use crate::performance::PerformanceOptimizer;
@@ -51,13 +53,44 @@ impl SoftwareMiningCore {
 
         let capabilities = CoreCapabilities {
             supports_auto_tuning: false,
-            supports_temperature_monitoring: true,
-            supports_voltage_control: false,
-            supports_frequency_control: true,
-            supports_fan_control: false,
+            temperature_capabilities: TemperatureCapabilities {
+                supports_monitoring: true,  // CPU可以监控温度
+                supports_control: false,    // CPU无法直接控制温度
+                supports_threshold_alerts: true,
+                monitoring_precision: Some(1.0), // 1度精度
+            },
+            voltage_capabilities: VoltageCapabilities {
+                supports_monitoring: false, // CPU软算法无法监控电压
+                supports_control: false,    // CPU软算法无法控制电压
+                control_range: None,
+            },
+            frequency_capabilities: FrequencyCapabilities {
+                supports_monitoring: false, // CPU软算法无法监控频率
+                supports_control: false,    // CPU软算法无法控制频率
+                control_range: None,
+            },
+            fan_capabilities: FanCapabilities {
+                supports_monitoring: false, // CPU软算法无法监控风扇
+                supports_control: false,    // CPU软算法无法控制风扇
+                fan_count: None,
+            },
             supports_multiple_chains: true,
             max_devices: Some(64), // 软算法核心支持最多64个设备
             supported_algorithms: vec!["SHA256".to_string(), "SHA256d".to_string()],
+            cpu_capabilities: Some(CpuSpecificCapabilities {
+                simd_support: vec!["SSE".to_string(), "AVX".to_string()], // 基础SIMD支持
+                supports_cpu_affinity: true,  // 支持CPU绑定
+                supports_numa_awareness: false, // 基础版本不支持NUMA
+                physical_cores: num_cpus::get_physical() as u32,
+                logical_cores: num_cpus::get() as u32,
+                cache_info: Some(CpuCacheInfo {
+                    l1_data_kb: 32,
+                    l1_instruction_kb: 32,
+                    l2_kb: 256,
+                    l3_kb: 8192,
+                }),
+            }),
+            core_type: cgminer_core::CoreType::Custom("software".to_string()),
         };
 
         let stats = CoreStats::new(name);

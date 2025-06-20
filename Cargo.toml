@@ -1,12 +1,12 @@
 [package]
 name = "cgminer-cpu-btc-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["CGMiner Rust Team"]
-description = "Software Bitcoin mining core for CGMiner-RS - provides CPU-based Bitcoin mining using real SHA256 algorithms"
+description = "Optimized CPU Bitcoin mining core for CGMiner-RS - provides SIMD-accelerated CPU mining with intelligent thermal and power management"
 license = "GPL-3.0"
 repository = "https://github.com/your-org/cgminer-rs"
-keywords = ["bitcoin", "mining", "software", "cpu", "sha256"]
+keywords = ["bitcoin", "mining", "cpu", "simd", "sha256"]
 categories = ["hardware-support", "algorithms"]
 
 [dependencies]
@@ -36,9 +36,26 @@ fastrand = "2.0"
 # CPU affinity and system info
 core_affinity = "0.8"
 num_cpus = "1.16"
+sysinfo = "0.30"
+
+# SIMD and performance
+rayon = "1.8"
 
 # Logging
 tracing = "0.1"
+
+# Optional features for advanced optimizations
+[dependencies.raw-cpuid]
+version = "11.0"
+optional = true
+
+[features]
+default = ["simd-optimizations", "thermal-management", "power-management"]
+simd-optimizations = []
+thermal-management = []
+power-management = []
+advanced-cpu-detection = ["raw-cpuid"]
+experimental = []
 
 [dev-dependencies]
 tokio-test = "0.4"
