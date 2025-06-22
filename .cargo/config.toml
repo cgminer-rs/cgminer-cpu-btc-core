@@ -69,20 +69,24 @@ rustflags = [
 ]
 
 [target.x86_64-pc-windows-msvc]
-# Windows x86_64 CPU挖矿优化
+# Windows x86_64 CPU挖矿优化 - 兼容性优先
 rustflags = [
-    "-C", "target-cpu=native",
-    "-C", "target-feature=+aes,+sha,+sse4.2,+avx2,+bmi2,+popcnt",
+    # 使用通用x86_64架构而不是native，确保跨Windows系统兼容性
+    "-C", "target-cpu=x86-64",
+    # 只启用基础且广泛支持的CPU特性
+    "-C", "target-feature=+sse2,+sse4.1,+sse4.2",
     "-C", "opt-level=3",
     "-C", "codegen-units=1",
     # "-C", "lto=fat",  # 注释掉避免与embed-bitcode冲突
     "-C", "overflow-checks=off",
 ]
 
+# Windows高性能版本配置在别名中定义，使用环境变量控制
+
 # 环境变量设置 - CPU挖矿专用
 [env]
-# 启用CPU特定优化
-RUSTFLAGS = { value = "-C prefer-dynamic=no -C target-feature=+crt-static", force = false }
+# 启用CPU特定优化 (注释掉避免与target-specific rustflags冲突)
+# RUSTFLAGS = { value = "-C prefer-dynamic=no -C target-feature=+crt-static", force = false }
 # 启用并行编译
 CARGO_BUILD_JOBS = { value = "0", force = false }
 # CPU挖矿特定环境变量
@@ -104,6 +108,10 @@ cpu-debug = "build --features=simd-optimizations,debug-logging"
 cpu-test = "test --features=simd-optimizations,cpu-affinity --release"
 # CPU挖矿性能分析
 cpu-profile = "build --release --features=simd-optimizations,profiling"
+# Windows兼容性构建 - 适用于旧CPU或兼容性优先
+win-compat = "build --release --target=x86_64-pc-windows-msvc"
+# Windows高性能构建 - 需要现代CPU
+win-perf = "build --release --target=x86_64-pc-windows-msvc --features=simd-optimizations,cpu-affinity"
 
 # 网络配置
 [net]
