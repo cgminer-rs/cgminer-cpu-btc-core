@@ -12,9 +12,148 @@ use sha2::{Sha256, Digest};
 use std::sync::{Arc, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
+
+/// 优化的SHA256双重哈希计算 - 使用固定大小数组提高性能
+#[inline(always)]
+fn optimized_double_sha256(data: &[u8]) -> [u8; 32] {
+    let first_hash = sha2::Sha256::digest(data);
+    let second_hash = sha2::Sha256::digest(&first_hash);
+    second_hash.into()
+}
+
+/// 挖矿专用结构体 - 用于异步挖矿任务
+#[derive(Clone)]
+struct SoftwareDeviceForMining {
+    device_id: u32,
+    device_info: Arc<RwLock<DeviceInfo>>,
+    status: Arc<RwLock<DeviceStatus>>,
+    stats: Arc<RwLock<DeviceStats>>,
+    current_work: Arc<Mutex<Option<Work>>>,
+    result_sender: Option<mpsc::UnboundedSender<MiningResult>>,
+    batch_size: u32,
+    error_rate: f64,
+    last_mining_time: Arc<RwLock<Option<Instant>>>,
+}
+
+impl SoftwareDeviceForMining {
+
+    /// 检查哈希是否满足目标难度
+    fn meets_target(&self, hash: &[u8], target: &[u8]) -> bool {
+        if hash.len() != target.len() {
+            return false;
+        }
+
+        for (h, t) in hash.iter().zip(target.iter()) {
+            if h < t {
+                return true;
+            } else if h > t {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// 持续挖矿 - 立即上报找到的解
+    async fn continuous_mining(&self, work: Work) -> Result<(), DeviceError> {
+        let device_id = self.device_id;
+        let mut total_hashes = 0u64;
+        let start_time = Instant::now();
+        let mut last_stats_update = start_time;
+        let mut last_work_check = start_time;
+        let mut active_work = work.clone();
+
+        debug!("设备 {} 开始持续挖矿", device_id);
+
+        loop {
+            // 每10秒检查一次新工作，减少锁竞争
+            let now = Instant::now();
+            if now.duration_since(last_work_check).as_secs() >= 10 {
+                if let Ok(work_guard) = self.current_work.try_lock() {
+                    if let Some(new_work) = work_guard.clone() {
+                        active_work = new_work;
+                    }
+                }
+                last_work_check = now;
+            }
+
+            // 每次循环做一批哈希
+            let batch_size = self.batch_size.min(100_000); // 限制批次大小避免阻塞
+
+            for i in 0..batch_size {
+                // 使用递增的nonce，确保覆盖更多可能性
+                let nonce = (fastrand::u32(..) + total_hashes as u32 + i as u32).wrapping_add(device_id);
+
+                // 构建区块头数据
+                let mut header_data = active_work.header;
+                // 将nonce写入区块头的最后4个字节
+                let nonce_bytes = nonce.to_le_bytes();
+                header_data[76..80].copy_from_slice(&nonce_bytes);
+
+                // 执行优化的SHA256双重哈希计算
+                let hash = optimized_double_sha256(&header_data);
+                total_hashes += 1;
+
+                // 检查是否满足目标难度
+                if self.meets_target(&hash, &active_work.target) {
+                    let result = MiningResult::new(
+                        active_work.id.clone(),
+                        device_id,
+                        nonce,
+                        hash.to_vec(),
+                        true,
+                    );
+
+                    // 立即上报找到的解
+                    if let Some(ref sender) = self.result_sender {
+                        if let Err(_) = sender.send(result.clone()) {
+                            debug!("设备 {} 结果通道已关闭", device_id);
+                            return Ok(());
+                        }
+                    }
+
+                    debug!("💎 设备 {} 持续挖矿找到解: nonce={:08x}", device_id, nonce);
+
+                    // 更新统计信息
+                    {
+                        let mut stats = self.stats.write().map_err(|e| {
+                            DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
+                        })?;
+                        stats.accepted_work += 1;
+                    }
+                }
+
+                // 动态CPU让出策略：根据批次大小调整让出频率
+                let yield_frequency = if batch_size > 50_000 { 5_000 } else { 10_000 };
+                if i % yield_frequency == 0 {
+                    tokio::task::yield_now().await;
+                }
+            }
+
+            // 优化统计更新频率：每5秒更新一次，减少锁竞争
+            let now = Instant::now();
+            if now.duration_since(last_stats_update).as_secs() >= 5 {
+                let elapsed = now.duration_since(start_time).as_secs_f64();
+                if let Ok(mut stats) = self.stats.try_write() {
+                    stats.update_hashrate(total_hashes, elapsed);
+                    last_stats_update = now;
+                }
+            }
+
+            // 优化设备状态检查：使用try_read减少阻塞
+            if let Ok(status) = self.status.try_read() {
+                if !matches!(*status, DeviceStatus::Running) {
+                    debug!("设备 {} 停止挖矿", device_id);
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
 
 /// 软算法设备
 pub struct SoftwareDevice {
@@ -45,6 +184,10 @@ pub struct SoftwareDevice {
     /// 缓存温度监控能力检查结果，避免重复检查和日志输出
     temperature_capability_checked: Arc<AtomicBool>,
     temperature_capability_supported: Arc<AtomicBool>,
+    /// cgminer风格结果发送通道 - 立即上报
+    result_sender: Option<mpsc::UnboundedSender<MiningResult>>,
+    /// 挖矿任务句柄
+    mining_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl SoftwareDevice {
@@ -78,6 +221,8 @@ impl SoftwareDevice {
             temperature_manager,
             temperature_capability_checked: Arc::new(AtomicBool::new(false)),
             temperature_capability_supported: Arc::new(AtomicBool::new(false)),
+            result_sender: None,
+            mining_handle: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -112,15 +257,17 @@ impl SoftwareDevice {
             temperature_manager,
             temperature_capability_checked: Arc::new(AtomicBool::new(false)),
             temperature_capability_supported: Arc::new(AtomicBool::new(false)),
+            result_sender: None,
+            mining_handle: Arc::new(Mutex::new(None)),
         })
     }
 
-    /// 执行SHA256双重哈希
-    fn double_sha256(&self, data: &[u8]) -> Vec<u8> {
-        let first_hash = Sha256::digest(data);
-        let second_hash = Sha256::digest(&first_hash);
-        second_hash.to_vec()
+    /// 设置结果发送通道 - 立即上报
+    pub fn set_result_sender(&mut self, sender: mpsc::UnboundedSender<MiningResult>) {
+        self.result_sender = Some(sender);
     }
+
+
 
     /// 检查哈希是否满足目标难度
     fn meets_target(&self, hash: &[u8], target: &[u8]) -> bool {
@@ -160,8 +307,8 @@ impl SoftwareDevice {
                 header_data[start_idx..].copy_from_slice(&nonce_bytes);
             }
 
-            // 执行真实的SHA256双重哈希计算
-            let hash = self.double_sha256(&header_data);
+            // 执行优化的SHA256双重哈希计算
+            let hash = optimized_double_sha256(&header_data);
             hashes_done += 1;
 
             // 检查是否满足目标难度
@@ -171,14 +318,26 @@ impl SoftwareDevice {
             let has_error = fastrand::f64() < self.error_rate;
 
             if meets_target && !has_error {
-                debug!("设备 {} 找到有效解: nonce={:08x}", device_id, nonce);
-                found_solution = Some(MiningResult::new(
+                let result = MiningResult::new(
                     work.id,
                     device_id,
                     nonce,
-                    hash,
+                    hash.to_vec(),
                     true,
-                ));
+                );
+
+                // 立即上报找到的解
+                if let Some(ref sender) = self.result_sender {
+                    if let Err(_) = sender.send(result.clone()) {
+                        debug!("设备 {} 结果通道已关闭", device_id);
+                        return Ok(None);
+                    }
+                    debug!("💎 设备 {} 立即上报解: nonce={:08x}", device_id, nonce);
+                } else {
+                    // 如果没有通道，保持原有行为
+                    debug!("设备 {} 找到有效解: nonce={:08x}", device_id, nonce);
+                    found_solution = Some(result);
+                }
                 break; // 找到解后退出循环
             }
 
@@ -300,6 +459,21 @@ impl SoftwareDevice {
         }
 
         Ok(())
+    }
+
+    /// 为挖矿任务克隆必要的数据
+    async fn clone_for_mining(&self) -> Result<SoftwareDeviceForMining, DeviceError> {
+        Ok(SoftwareDeviceForMining {
+            device_id: self.device_id(),
+            device_info: self.device_info.clone(),
+            status: self.status.clone(),
+            stats: self.stats.clone(),
+            current_work: self.current_work.clone(),
+            result_sender: self.result_sender.clone(),
+            batch_size: self.batch_size,
+            error_rate: self.error_rate,
+            last_mining_time: self.last_mining_time.clone(),
+        })
     }
 }
 
@@ -430,11 +604,32 @@ impl MiningDevice for SoftwareDevice {
         Ok(())
     }
 
-    /// 提交工作
+    /// 提交工作 - 启动持续挖矿
     async fn submit_work(&mut self, work: Work) -> Result<(), DeviceError> {
+        let device_id = self.device_id();
+
+        // 更新当前工作
         {
             let mut current_work = self.current_work.lock().await;
-            *current_work = Some(work);
+            *current_work = Some(work.clone());
+        }
+
+        // 如果有结果发送通道，启动持续挖矿
+        if self.result_sender.is_some() {
+            let mut handle_guard = self.mining_handle.lock().await;
+            if handle_guard.is_none() {
+                let device_clone = self.clone_for_mining().await?;
+                let work_clone = work.clone();
+
+                let handle = tokio::spawn(async move {
+                    if let Err(e) = device_clone.continuous_mining(work_clone).await {
+                        debug!("设备 {} 挖矿任务结束: {}", device_id, e);
+                    }
+                });
+
+                *handle_guard = Some(handle);
+                debug!("设备 {} 启动持续挖矿任务", device_id);
+            }
         }
 
         Ok(())
@@ -442,6 +637,12 @@ impl MiningDevice for SoftwareDevice {
 
     /// 获取挖矿结果
     async fn get_result(&mut self) -> Result<Option<MiningResult>, DeviceError> {
+        // 立即上报模式：如果有结果通道，结果通过通道立即上报，这里返回None
+        if self.result_sender.is_some() {
+            return Ok(None);
+        }
+
+        // 传统模式：执行挖矿并返回结果
         let work = {
             let current_work = self.current_work.lock().await;
             current_work.clone()

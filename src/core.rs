@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tracing::{info, warn, error, debug};
 
 /// 软算法挖矿核心
@@ -38,6 +38,11 @@ pub struct SoftwareMiningCore {
     performance_optimizer: Option<PerformanceOptimizer>,
     /// CPU绑定管理器
     cpu_affinity_manager: Option<Arc<RwLock<CpuAffinityManager>>>,
+    /// cgminer风格结果通道 - 立即上报
+    result_receiver: Arc<Mutex<Option<mpsc::UnboundedReceiver<MiningResult>>>>,
+    result_sender: Option<mpsc::UnboundedSender<MiningResult>>,
+    /// 收集到的结果缓存
+    collected_results: Arc<Mutex<Vec<MiningResult>>>,
 }
 
 impl SoftwareMiningCore {
@@ -96,6 +101,9 @@ impl SoftwareMiningCore {
 
         let stats = CoreStats::new(name);
 
+        // 创建cgminer风格的结果通道
+        let (sender, receiver) = mpsc::unbounded_channel();
+
         Self {
             core_info,
             capabilities,
@@ -106,6 +114,9 @@ impl SoftwareMiningCore {
             start_time: None,
             performance_optimizer: None,
             cpu_affinity_manager: None,
+            result_receiver: Arc::new(Mutex::new(Some(receiver))),
+            result_sender: Some(sender),
+            collected_results: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -114,9 +125,19 @@ impl SoftwareMiningCore {
         let mut devices = Vec::new();
 
         // 从配置中获取设备数量（支持环境变量覆盖）
-        let device_count = self.get_device_count_from_config_with_params(config);
+        let requested_device_count = self.get_device_count_from_config_with_params(config);
 
-        info!("配置中的设备数量: {}", device_count);
+        // CPU挖矿优化：限制设备数量为CPU核心数，避免不必要的开销
+        let cpu_cores = num_cpus::get() as u32;
+        let device_count = if requested_device_count > cpu_cores {
+            info!("⚠️  请求的设备数量 {} 超过CPU核心数 {}，自动限制为CPU核心数以获得最佳性能",
+                  requested_device_count, cpu_cores);
+            cpu_cores
+        } else {
+            requested_device_count
+        };
+
+        info!("实际设备数量: {} (CPU核心数: {})", device_count, cpu_cores);
         debug!("完整配置参数: {:?}", config.custom_params);
 
         // 获取算力范围
@@ -140,8 +161,9 @@ impl SoftwareMiningCore {
             .and_then(|v| v.as_u64())
             .unwrap_or(1000) as u32;
 
-        info!("创建 {} 个优化CPU设备，算力范围: {:.2} - {:.2} GH/s",
+        info!("🔥 创建 {} 个优化CPU设备 (CPU核心数: {})，算力范围: {:.2} - {:.2} GH/s",
               device_count,
+              cpu_cores,
               min_hashrate / 1_000_000_000.0,
               max_hashrate / 1_000_000_000.0);
 
@@ -177,7 +199,7 @@ impl SoftwareMiningCore {
                 i as u8,
             );
 
-            let device = if let Some(cpu_affinity) = &self.cpu_affinity_manager {
+            let mut device = if let Some(cpu_affinity) = &self.cpu_affinity_manager {
                 // 为CPU绑定管理器分配设备
                 {
                     let mut affinity_manager = cpu_affinity.write().map_err(|e| {
@@ -203,6 +225,11 @@ impl SoftwareMiningCore {
                     batch_size,
                 ).await?
             };
+
+            // 设置cgminer风格的结果发送通道
+            if let Some(ref sender) = self.result_sender {
+                device.set_result_sender(sender.clone());
+            }
 
             devices.push(Box::new(device) as Box<dyn MiningDevice>);
         }
@@ -325,6 +352,43 @@ impl SoftwareMiningCore {
         info!("使用默认优化CPU设备数量: 4");
         4u32
     }
+
+    /// 启动立即上报的结果收集任务
+    async fn start_result_collection(&self) -> Result<(), CoreError> {
+        let receiver = {
+            let mut receiver_guard = self.result_receiver.lock().await;
+            receiver_guard.take()
+        };
+
+        if let Some(mut receiver) = receiver {
+            let collected_results = self.collected_results.clone();
+            let stats = self.stats.clone();
+
+            tokio::spawn(async move {
+                while let Some(result) = receiver.recv().await {
+                    // 立即处理收到的结果
+                    debug!("💎 设备 {} 找到解: nonce={:08x}",
+                          result.device_id, result.nonce);
+
+                    // 更新统计信息
+                    {
+                        let mut stats_guard = stats.write().unwrap();
+                        stats_guard.accepted_work += 1;
+                    }
+
+                    // 缓存结果供collect_results使用
+                    {
+                        let mut results_guard = collected_results.lock().await;
+                        results_guard.push(result);
+                    }
+                }
+            });
+
+            info!("立即上报结果收集任务已启动");
+        }
+
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -435,6 +499,9 @@ impl MiningCore for SoftwareMiningCore {
             *running = true;
         }
 
+        // 启动立即上报的结果收集任务
+        self.start_result_collection().await?;
+
         // 启动所有设备
         {
             let mut devices = self.devices.lock().await;
@@ -447,7 +514,7 @@ impl MiningCore for SoftwareMiningCore {
         }
 
         self.start_time = Some(SystemTime::now());
-        info!("优化CPU挖矿核心启动完成");
+        info!("优化CPU挖矿核心启动完成 - 立即上报已启用");
         Ok(())
     }
 
@@ -504,9 +571,19 @@ impl MiningCore for SoftwareMiningCore {
         drop(devices);
 
         // 如果设备未创建，根据配置生成应该创建的设备信息
-        let device_count = self.get_device_count_from_config();
+        let requested_device_count = self.get_device_count_from_config();
 
-        info!("扫描到 {} 个软算法设备", device_count);
+        // CPU挖矿优化：限制设备数量为CPU核心数
+        let cpu_cores = num_cpus::get() as u32;
+        let device_count = if requested_device_count > cpu_cores {
+            info!("⚠️  环境变量设置的设备数量 {} 超过CPU核心数 {}，自动限制为CPU核心数",
+                  requested_device_count, cpu_cores);
+            cpu_cores
+        } else {
+            requested_device_count
+        };
+
+        info!("扫描到 {} 个软算法设备 (CPU核心数: {})", device_count, cpu_cores);
 
         let mut device_infos = Vec::new();
         for i in 0..device_count {
@@ -599,30 +676,14 @@ impl MiningCore for SoftwareMiningCore {
         Ok(())
     }
 
-    /// 收集所有设备的挖矿结果
+    /// 收集所有设备的挖矿结果 - 从缓存获取立即上报的结果
     async fn collect_results(&mut self) -> Result<Vec<MiningResult>, CoreError> {
-        let mut results = Vec::new();
-        let mut devices = self.devices.lock().await;
+        // 从缓存中获取已经立即上报的结果
+        let mut results_guard = self.collected_results.lock().await;
+        let results = results_guard.drain(..).collect::<Vec<_>>();
 
-        for (device_id, device) in devices.iter_mut() {
-            match device.get_result().await {
-                Ok(Some(result)) => {
-                    // 只在找到有效结果时记录，使用info级别因为这是重要信息
-                    info!("💎 设备 {} 发现有效结果: nonce={:08x}", device_id, result.nonce);
-                    results.push(result);
-                }
-                Ok(None) => {
-                    // 没有结果 - 这是正常的，不记录日志
-                },
-                Err(e) => {
-                    warn!("获取设备 {} 挖矿结果失败: {}", device_id, e);
-                }
-            }
-        }
-
-        // 只在有结果时才记录
         if !results.is_empty() {
-            info!("🎯 本轮收集到 {} 个有效挖矿结果", results.len());
+            debug!("🎯 从缓存收集到 {} 个结果", results.len());
         }
 
         Ok(results)

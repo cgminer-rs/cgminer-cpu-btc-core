@@ -31,6 +31,8 @@ pub mod performance;
 pub mod platform_optimization;
 pub mod temperature;
 
+
+
 #[cfg(test)]
 mod temperature_test;
 
@@ -38,6 +40,8 @@ mod temperature_test;
 pub use factory::SoftwareCoreFactory;
 pub use core::SoftwareMiningCore;
 pub use device::SoftwareDevice;
+
+
 
 use cgminer_core::{CoreType, CoreInfo};
 
