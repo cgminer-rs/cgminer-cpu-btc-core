@@ -42,15 +42,16 @@ impl SoftwareDeviceForMining {
 
     /// 检查哈希是否满足目标难度
     fn meets_target(&self, hash: &[u8], target: &[u8]) -> bool {
-        if hash.len() != target.len() {
-            return false;
-        }
-
-        for (h, t) in hash.iter().zip(target.iter()) {
-            if h < t {
-                return true;
-            } else if h > t {
-                return false;
+        debug_assert_eq!(hash.len(), 32);
+        debug_assert_eq!(target.len(), 32);
+        unsafe {
+            let hash_u64 = &*(hash.as_ptr() as *const [u64; 4]);
+            let target_u64 = &*(target.as_ptr() as *const [u64; 4]);
+            for i in 0..4 {
+                let h = u64::from_be(hash_u64[i]);
+                let t = u64::from_be(target_u64[i]);
+                if h < t { return true; }
+                if h > t { return false; }
             }
         }
         false
@@ -64,6 +65,7 @@ impl SoftwareDeviceForMining {
         let mut last_stats_update = start_time;
         let mut last_work_check = start_time;
         let mut active_work = work.clone();
+        let mut nonce = fastrand::u32(..);
 
         debug!("设备 {} 开始持续挖矿", device_id);
 
@@ -73,7 +75,11 @@ impl SoftwareDeviceForMining {
             if now.duration_since(last_work_check).as_secs() >= 10 {
                 if let Ok(work_guard) = self.current_work.try_lock() {
                     if let Some(new_work) = work_guard.clone() {
-                        active_work = new_work;
+                        if new_work.id != active_work.id {
+                            active_work = new_work;
+                            // 重置nonce以开始新的搜索
+                            nonce = fastrand::u32(..);
+                        }
                     }
                 }
                 last_work_check = now;
@@ -81,13 +87,12 @@ impl SoftwareDeviceForMining {
 
             // 每次循环做一批哈希
             let batch_size = self.batch_size.min(100_000); // 限制批次大小避免阻塞
+            let mut header_data = active_work.header;
 
             for i in 0..batch_size {
                 // 使用递增的nonce，确保覆盖更多可能性
-                let nonce = (fastrand::u32(..) + total_hashes as u32 + i as u32).wrapping_add(device_id);
+                nonce = nonce.wrapping_add(1);
 
-                // 构建区块头数据
-                let mut header_data = active_work.header;
                 // 将nonce写入区块头的最后4个字节
                 let nonce_bytes = nonce.to_le_bytes();
                 header_data[76..80].copy_from_slice(&nonce_bytes);
@@ -267,19 +272,18 @@ impl SoftwareDevice {
         self.result_sender = Some(sender);
     }
 
-
-
     /// 检查哈希是否满足目标难度
     fn meets_target(&self, hash: &[u8], target: &[u8]) -> bool {
-        if hash.len() != target.len() {
-            return false;
-        }
-
-        for (h, t) in hash.iter().zip(target.iter()) {
-            if h < t {
-                return true;
-            } else if h > t {
-                return false;
+        debug_assert_eq!(hash.len(), 32);
+        debug_assert_eq!(target.len(), 32);
+        unsafe {
+            let hash_u64 = &*(hash.as_ptr() as *const [u64; 4]);
+            let target_u64 = &*(target.as_ptr() as *const [u64; 4]);
+            for i in 0..4 {
+                let h = u64::from_be(hash_u64[i]);
+                let t = u64::from_be(target_u64[i]);
+                if h < t { return true; }
+                if h > t { return false; }
             }
         }
         false
