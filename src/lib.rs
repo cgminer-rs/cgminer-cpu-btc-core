@@ -50,7 +50,7 @@ pub fn get_core_info() -> CoreInfo {
         "Optimized CPU Mining Core".to_string(),
         CoreType::Custom("optimized_cpu".to_string()),
         VERSION.to_string(),
-        "优化CPU挖矿核心，支持SIMD加速、智能温度管理和动态负载均衡".to_string(),
+        "优化CPU挖矿核心，支持SIMD加速、智能线程调度和动态负载均衡".to_string(),
         "CGMiner Rust Team".to_string(),
         vec!["optimized_cpu".to_string(), "simd".to_string(), "cpu".to_string()],
     )

@@ -108,6 +108,9 @@ experimental = ["simd-optimizations", "advanced-math", "memory-optimized", "adva
 tokio-test = "0.4"
 mockall = "0.12"
 tracing-subscriber = "0.3"
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
+futures = "0.3"
 
 [lib]
 name = "cgminer_cpu_btc_core"
@@ -243,5 +246,34 @@ codegen-units = 1
 
 # 示例程序
 [[example]]
+name = "basic_mining_demo"
+path = "examples/basic_mining_demo.rs"
+
+[[example]]
+name = "multi_device_demo"
+path = "examples/multi_device_demo.rs"
+
+[[example]]
+name = "performance_monitoring_demo"
+path = "examples/performance_monitoring_demo.rs"
+
+[[example]]
 name = "temperature_demo"
 path = "examples/temperature_demo.rs"
+
+[[example]]
+name = "cpu_affinity_demo"
+path = "examples/cpu_affinity_demo.rs"
+
+[[example]]
+name = "real_mining_simulation"
+path = "examples/real_mining_simulation.rs"
+
+[[example]]
+name = "benchmark_demo"
+path = "examples/benchmark_demo.rs"
+
+# 基准测试
+[[bench]]
+name = "cpu_btc_core_benchmark"
+harness = false

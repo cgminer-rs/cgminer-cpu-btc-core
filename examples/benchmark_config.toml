@@ -1,0 +1,161 @@
+# CGMiner CPU BTC Core 基准测试配置文件
+# 用于配置基准测试的各种参数和选项
+
+[benchmark]
+# 基准测试基本配置
+name = "CGMiner CPU BTC Core Benchmark"
+version = "1.0.0"
+description = "Complete benchmark suite for cgminer-cpu-btc-core"
+
+# 测试模式配置
+[benchmark.modes]
+# 快速模式 - 用于快速验证
+quick = { sample_size = 10, measurement_time = 1 }
+# 标准模式 - 默认配置
+standard = { sample_size = 100, measurement_time = 5 }
+# 详细模式 - 高精度测试
+detailed = { sample_size = 1000, measurement_time = 10 }
+# 生产模式 - 最高精度
+production = { sample_size = 5000, measurement_time = 30 }
+
+# SHA256 哈希测试配置
+[benchmark.sha256]
+enabled = true
+batch_sizes = [100, 1000, 10000]
+iterations = [1000, 10000, 100000]
+test_data_size = 80  # 区块头大小
+
+# 设备测试配置
+[benchmark.device]
+enabled = true
+device_counts = [1, 2, 4, 8]
+thread_counts = [1, 2, 4]
+intensity_levels = [0.5, 1.0, 2.0]
+
+# 工作处理测试配置
+[benchmark.work_processing]
+enabled = true
+work_counts = [10, 50, 100, 500]
+batch_sizes = [1, 10, 50]
+concurrent_workers = [1, 2, 4]
+
+# 性能监控测试配置
+[benchmark.performance]
+enabled = true
+record_counts = [100, 1000, 10000]
+monitoring_intervals = [100, 500, 1000]  # 毫秒
+
+# 温度监控测试配置
+[benchmark.temperature]
+enabled = true
+reading_counts = [100, 1000]
+mock_temperature_range = [30.0, 80.0]
+
+# 内存效率测试配置
+[benchmark.memory]
+enabled = true
+allocation_sizes = [1000, 10000, 100000]
+test_preallocated = true
+test_dynamic = true
+
+# 并发测试配置
+[benchmark.concurrency]
+enabled = true
+device_counts = [2, 4, 8, 16]
+work_loads = [10, 50, 100]
+async_tasks = [10, 50, 100]
+
+# 输出配置
+[output]
+# HTML报告配置
+html_report = true
+html_path = "target/criterion/report/index.html"
+
+# JSON数据导出
+json_export = true
+json_path = "target/criterion/benchmark_results.json"
+
+# CSV数据导出
+csv_export = false
+csv_path = "target/criterion/benchmark_results.csv"
+
+# 自定义报告
+custom_report = true
+custom_report_path = "benchmark_report.md"
+
+# 基线管理
+[baseline]
+# 自动保存基线
+auto_save = false
+auto_save_name = "auto_baseline"
+
+# 基线比较
+auto_compare = false
+compare_threshold = 0.05  # 5% 性能变化阈值
+
+# 基线存储路径
+storage_path = "target/criterion/baselines"
+
+# 系统信息收集
+[system]
+collect_info = true
+include_cpu_info = true
+include_memory_info = true
+include_os_info = true
+include_rust_version = true
+
+# 环境变量
+[environment]
+# Rust编译器标志
+rustflags = ["-C", "target-cpu=native"]
+
+# 环境变量设置
+env_vars = { RUST_LOG = "info" }
+
+# 优化配置
+[optimization]
+# 编译优化
+release_mode = true
+lto = "fat"
+codegen_units = 1
+panic = "abort"
+
+# 运行时优化
+cpu_affinity = true
+high_priority = false
+
+# 通知配置
+[notifications]
+# 完成通知
+on_completion = false
+notification_command = "echo 'Benchmark completed'"
+
+# 失败通知
+on_failure = false
+failure_command = "echo 'Benchmark failed'"
+
+# 邮件通知（如果配置）
+email_notifications = false
+email_recipients = []
+
+# 高级配置
+[advanced]
+# 预热配置
+warmup_iterations = 10
+warmup_time = 1  # 秒
+
+# 统计配置
+confidence_level = 0.95
+significance_level = 0.05
+
+# 异常值处理
+outlier_detection = true
+outlier_threshold = 3.0  # 标准差倍数
+
+# 内存监控
+memory_monitoring = true
+memory_limit_mb = 4096
+
+# 时间限制
+max_benchmark_time = 3600  # 秒（1小时）
+max_single_test_time = 300  # 秒（5分钟）
