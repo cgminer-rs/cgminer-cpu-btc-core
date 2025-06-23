@@ -177,16 +177,16 @@ impl SoftwareMiningCore {
         info!("实际设备数量: {} (CPU核心数: {})", device_count, cpu_cores);
         debug!("完整配置参数: {:?}", config.custom_params);
 
-        // 获取算力范围
+        // 获取算力范围 - 提高到您期望的35MH/s水平
         let min_hashrate = config.custom_params
             .get("min_hashrate")
             .and_then(|v| v.as_f64())
-            .unwrap_or(1_000_000_000.0); // 1 GH/s
+            .unwrap_or(30_000_000.0); // 30 MH/s
 
         let max_hashrate = config.custom_params
             .get("max_hashrate")
             .and_then(|v| v.as_f64())
-            .unwrap_or(5_000_000_000.0); // 5 GH/s
+            .unwrap_or(40_000_000.0); // 40 MH/s
 
         let error_rate = config.custom_params
             .get("error_rate")
@@ -196,13 +196,13 @@ impl SoftwareMiningCore {
         let batch_size = config.custom_params
             .get("batch_size")
             .and_then(|v| v.as_u64())
-            .unwrap_or(1000) as u32;
+            .unwrap_or(1_000_000) as u32; // 增加批次大小到100万，提高实际算力
 
-        info!("🔥 创建 {} 个优化CPU设备 (CPU核心数: {})，算力范围: {:.2} - {:.2} GH/s",
+        info!("🔥 创建 {} 个优化CPU设备 (CPU核心数: {})，算力范围: {:.2} - {:.2} MH/s",
               device_count,
               cpu_cores,
-              min_hashrate / 1_000_000_000.0,
-              max_hashrate / 1_000_000_000.0);
+              min_hashrate / 1_000_000.0,
+              max_hashrate / 1_000_000.0);
 
         for i in 0..device_count {
             // 为每个设备分配不同的算力
@@ -362,16 +362,23 @@ impl SoftwareMiningCore {
         }
 
         // 2. 从传入的配置参数读取
+        debug!("传入的配置参数: {:?}", config.custom_params);
         if let Some(device_count) = config.custom_params.get("device_count") {
+            debug!("找到device_count参数: {:?}", device_count);
             if let Some(count) = device_count.as_u64() {
                 let count = count as u32;
+                debug!("解析device_count为: {}", count);
                 if count > 0 && count <= 1000 {
                     info!("从配置文件读取优化CPU设备数量: {}", count);
                     return count;
                 } else {
                     warn!("配置文件中的设备数量 {} 超出范围，使用默认值", count);
                 }
+            } else {
+                warn!("device_count参数无法解析为数字: {:?}", device_count);
             }
+        } else {
+            warn!("未找到device_count参数，可用参数: {:?}", config.custom_params.keys().collect::<Vec<_>>());
         }
 
         // 3. 使用默认值

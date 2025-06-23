@@ -324,6 +324,8 @@ pub struct SoftwareDevice {
     atomic_stats: Arc<AtomicStats>,
     /// 无锁工作队列 - 替换Mutex<Option<Work>>
     work_queue: Arc<crate::concurrent_optimization::LockFreeWorkQueue>,
+    /// cgminer风格的算力追踪器
+    hashrate_tracker: Arc<HashrateTracker>,
     /// 目标算力 (hashes per second)
     target_hashrate: f64,
     /// 错误率
@@ -375,6 +377,9 @@ impl SoftwareDevice {
             BatchStatsUpdater::new(atomic_stats.clone(), 100) // 每100ms批量更新
         ));
 
+        // 创建cgminer风格的算力追踪器
+        let hashrate_tracker = Arc::new(HashrateTracker::new());
+
         // 创建温度管理器（仅在支持真实温度监控时）
         let temp_config = TemperatureConfig::default();
         let temperature_manager = Some(TemperatureManager::new(temp_config));
@@ -385,6 +390,7 @@ impl SoftwareDevice {
             status: Arc::new(RwLock::new(DeviceStatus::Uninitialized)),
             atomic_stats,
             work_queue,
+            hashrate_tracker,
             target_hashrate,
             error_rate,
             batch_size,
@@ -423,6 +429,9 @@ impl SoftwareDevice {
             BatchStatsUpdater::new(atomic_stats.clone(), 100)
         ));
 
+        // 创建cgminer风格的算力追踪器
+        let hashrate_tracker = Arc::new(HashrateTracker::new());
+
         // 创建温度管理器
         let temp_config = TemperatureConfig::default();
         let temperature_manager = Some(TemperatureManager::new(temp_config));
@@ -433,6 +442,7 @@ impl SoftwareDevice {
             status: Arc::new(RwLock::new(DeviceStatus::Uninitialized)),
             atomic_stats,
             work_queue,
+            hashrate_tracker,
             target_hashrate,
             error_rate,
             batch_size,
@@ -524,13 +534,13 @@ impl SoftwareDevice {
                 break; // 找到解后退出循环
             }
 
-            // 使用平台特定的CPU让出策略优化
-            if hashes_done % platform_optimization::get_platform_yield_frequency() == 0 {
+            // 减少CPU让出频率以提高算力性能
+            if hashes_done % (platform_optimization::get_platform_yield_frequency() * 10) == 0 {
                 tokio::task::yield_now().await;
             }
         }
 
-        let elapsed = start_time.elapsed().as_secs_f64();
+        let _elapsed = start_time.elapsed().as_secs_f64();
 
         // 更新统计信息
         // 使用原子统计更新 - 无锁操作
@@ -559,10 +569,11 @@ impl SoftwareDevice {
         let mut hashes_done = 0u64;
         let mut found_solution = None;
 
-        // 根据目标算力计算批次大小
+        // 根据目标算力计算批次大小 - 优化为更大的批次以提高效率
         let target_hashes_per_second = self.target_hashrate;
         let adjusted_batch_size = if target_hashes_per_second > 0.0 {
-            (target_hashes_per_second / 10.0).max(self.batch_size as f64).min(self.batch_size as f64 * 2.0) as u32
+            // 使用更大的批次大小来提高实际算力
+            (target_hashes_per_second / 5.0).max(self.batch_size as f64).min(self.batch_size as f64 * 5.0) as u32
         } else {
             self.batch_size
         };
@@ -615,13 +626,13 @@ impl SoftwareDevice {
                 break; // 找到解后退出循环
             }
 
-            // 使用平台特定的CPU让出策略优化
-            if hashes_done % platform_optimization::get_platform_yield_frequency() == 0 {
+            // 减少CPU让出频率以提高算力性能
+            if hashes_done % (platform_optimization::get_platform_yield_frequency() * 10) == 0 {
                 tokio::task::yield_now().await;
             }
         }
 
-        let elapsed = start_time.elapsed().as_secs_f64();
+        let _elapsed = start_time.elapsed().as_secs_f64();
 
         // 更新统计信息
         // 使用原子统计更新 - 无锁操作
@@ -631,6 +642,12 @@ impl SoftwareDevice {
 
         // 基于实际哈希次数更新算力统计
         self.atomic_stats.record_hashes(hashes_done);
+
+        // 更新cgminer风格的算力追踪器
+        self.hashrate_tracker.add_hashes(hashes_done);
+        if found_solution.is_some() {
+            self.hashrate_tracker.increment_accepted();
+        }
 
         // 更新最后挖矿时间
         {
@@ -946,6 +963,9 @@ impl MiningDevice for SoftwareDevice {
             updater.force_flush();
         }
 
+        // 更新cgminer风格的算力追踪器
+        self.hashrate_tracker.update_averages();
+
         // 获取原始统计数据
         let (total_hashes, start_time_nanos, last_update_nanos) = self.atomic_stats.get_raw_stats();
 
@@ -955,20 +975,18 @@ impl MiningDevice for SoftwareDevice {
             .unwrap_or_default()
             .as_nanos() as u64;
 
-        // 计算当前算力（基于最近一段时间的哈希数）
-        let recent_time_window = 5.0; // 5秒窗口
-        let time_since_last_update = (current_time_nanos - last_update_nanos) as f64 / 1_000_000_000.0;
-        let current_hashrate = if time_since_last_update > 0.0 && time_since_last_update < recent_time_window {
-            // 如果最近有更新，使用目标算力作为当前算力的估计
-            self.target_hashrate
-        } else {
-            0.0 // 如果太久没有更新，算力为0
-        };
-
-        // 计算平均算力（基于总哈希数）
+        // 计算总体平均算力（基于总哈希数和总时间）
         let total_elapsed = (current_time_nanos - start_time_nanos) as f64 / 1_000_000_000.0;
         let average_hashrate = if total_elapsed > 0.0 {
             total_hashes as f64 / total_elapsed
+        } else {
+            0.0
+        };
+
+        // 计算当前算力（使用平均算力作为当前算力的估计）
+        // 在真实的cgminer中，算力基于实际哈希计算，不依赖于是否找到解
+        let current_hashrate = if total_hashes > 0 && total_elapsed > 0.0 {
+            average_hashrate // 使用平均算力作为当前算力
         } else {
             0.0
         };
