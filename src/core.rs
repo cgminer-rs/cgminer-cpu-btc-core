@@ -274,7 +274,7 @@ impl SoftwareMiningCore {
         Ok(devices)
     }
 
-    /// 更新统计信息
+    /// 更新核心统计信息 - 核心层负责算力计算
     async fn update_stats(&self) -> Result<(), CoreError> {
         let devices = self.devices.lock().await;
         let mut total_hashrate = 0.0;
@@ -282,16 +282,42 @@ impl SoftwareMiningCore {
         let mut total_rejected = 0;
         let mut total_errors = 0;
         let mut active_devices = 0;
+        let mut total_hashes = 0u64;
+
+        let current_time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
 
         for device in devices.values() {
-            if let Ok(stats) = device.get_stats().await {
-                total_hashrate += stats.current_hashrate.hashes_per_second;
-                total_accepted += stats.accepted_work;
-                total_rejected += stats.rejected_work;
-                total_errors += stats.hardware_errors;
+            // 获取设备的原始统计数据
+            if let Ok(device_stats) = device.get_stats().await {
+                total_accepted += device_stats.accepted_work;
+                total_rejected += device_stats.rejected_work;
+                total_errors += device_stats.hardware_errors;
+                total_hashes += device_stats.total_hashes;
                 active_devices += 1;
+
+                // 如果设备支持原始数据获取，计算设备算力
+                // 注意：这里需要设备提供原始数据接口，暂时使用现有数据
+                let device_hashrate = device_stats.current_hashrate.hashes_per_second;
+                total_hashrate += device_hashrate;
             }
         }
+
+        // 计算核心级别的算力
+        let core_start_time = self.start_time.map(|t|
+            t.duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+        ).unwrap_or(current_time);
+
+        let total_elapsed_secs = (current_time - core_start_time) as f64 / 1_000_000_000.0;
+        let core_average_hashrate = if total_elapsed_secs > 0.0 {
+            total_hashes as f64 / total_elapsed_secs
+        } else {
+            0.0
+        };
 
         let mut stats = self.stats.write().map_err(|e| {
             CoreError::runtime(format!("Failed to acquire write lock: {}", e))
@@ -299,12 +325,8 @@ impl SoftwareMiningCore {
 
         stats.device_count = devices.len() as u32;
         stats.active_devices = active_devices;
-        stats.total_hashrate = total_hashrate;
-        stats.average_hashrate = if active_devices > 0 {
-            total_hashrate / active_devices as f64
-        } else {
-            0.0
-        };
+        stats.total_hashrate = total_hashrate; // 当前算力（所有设备当前算力之和）
+        stats.average_hashrate = core_average_hashrate; // 核心平均算力（基于总哈希数计算）
         stats.accepted_work = total_accepted;
         stats.rejected_work = total_rejected;
         stats.hardware_errors = total_errors;
@@ -316,6 +338,9 @@ impl SoftwareMiningCore {
         }
 
         stats.last_updated = SystemTime::now();
+
+        debug!("核心统计更新: 设备数={}, 活跃={}, 当前算力={:.2} H/s, 平均算力={:.2} H/s",
+               stats.device_count, stats.active_devices, stats.total_hashrate, stats.average_hashrate);
 
         Ok(())
     }

@@ -68,6 +68,7 @@ use std::time::{Duration, SystemTime};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
+use std::sync::Mutex;
 
 /// 原子统计计数器 - 消除锁竞争
 /// 替换 Arc<RwLock<DeviceStats>> 以提高并发性能
@@ -117,38 +118,25 @@ impl AtomicStats {
         }
     }
 
-    /// 原子更新哈希率 - 无锁操作
-    pub fn update_hashrate(&self, hashes: u64, elapsed_secs: f64) {
+    /// 记录哈希数 - 设备层只记录原始数据，不计算算力
+    pub fn record_hashes(&self, hashes: u64) {
         // 原子更新总哈希数
         self.total_hashes.fetch_add(hashes, Ordering::Relaxed);
 
-        // 计算当前哈希率
-        let current_hashrate = if elapsed_secs > 0.0 {
-            hashes as f64 / elapsed_secs
-        } else {
-            0.0
-        };
-
-        // 原子更新最新哈希率
-        self.last_hashrate.store(current_hashrate.to_bits(), Ordering::Relaxed);
-
-        // 计算并更新平均哈希率
-        let total = self.total_hashes.load(Ordering::Relaxed);
-        let start_time = self.start_time_nanos.load(Ordering::Relaxed);
+        // 更新时间戳
         let now_nanos = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-
-        let total_elapsed = (now_nanos - start_time) as f64 / 1_000_000_000.0;
-        let avg_hashrate = if total_elapsed > 0.0 {
-            total as f64 / total_elapsed
-        } else {
-            0.0
-        };
-
-        self.average_hashrate.store(avg_hashrate.to_bits(), Ordering::Relaxed);
         self.last_update_nanos.store(now_nanos, Ordering::Relaxed);
+    }
+
+    /// 获取原始统计数据供上层计算算力使用
+    pub fn get_raw_stats(&self) -> (u64, u64, u64) {
+        let total_hashes = self.total_hashes.load(Ordering::Relaxed);
+        let start_time = self.start_time_nanos.load(Ordering::Relaxed);
+        let last_update = self.last_update_nanos.load(Ordering::Relaxed);
+        (total_hashes, start_time, last_update)
     }
 
     /// 原子增加接受的工作数
@@ -176,8 +164,8 @@ impl AtomicStats {
         self.power_consumption.store(power.to_bits() as u32, Ordering::Relaxed);
     }
 
-    /// 转换为 DeviceStats 结构体 - 用于兼容现有API
-    pub fn to_device_stats(&self) -> DeviceStats {
+    /// 转换为 DeviceStats 结构体 - 不包含算力计算，由上层计算
+    pub fn to_device_stats_with_hashrate(&self, current_hashrate: f64, average_hashrate: f64) -> DeviceStats {
         let mut stats = DeviceStats::new(self.device_id);
 
         stats.total_hashes = self.total_hashes.load(Ordering::Relaxed);
@@ -185,10 +173,7 @@ impl AtomicStats {
         stats.rejected_work = self.rejected_work.load(Ordering::Relaxed);
         stats.hardware_errors = self.hardware_errors.load(Ordering::Relaxed);
 
-        // 从位模式恢复浮点数 - 映射到正确的字段
-        let current_hashrate = f64::from_bits(self.last_hashrate.load(Ordering::Relaxed));
-        let average_hashrate = f64::from_bits(self.average_hashrate.load(Ordering::Relaxed));
-
+        // 使用上层计算的算力
         stats.current_hashrate = cgminer_core::HashRate::new(current_hashrate);
         stats.average_hashrate = cgminer_core::HashRate::new(average_hashrate);
 
@@ -204,10 +189,7 @@ impl AtomicStats {
         }
 
         // 更新时间戳
-        let _start_nanos = self.start_time_nanos.load(Ordering::Relaxed);
         let update_nanos = self.last_update_nanos.load(Ordering::Relaxed);
-
-        // 注意：DeviceStats中没有start_time字段，只有last_updated
         stats.last_updated = SystemTime::UNIX_EPOCH + Duration::from_nanos(update_nanos);
 
         stats
@@ -292,8 +274,8 @@ impl BatchStatsUpdater {
     /// 强制批量提交统计数据
     pub fn force_flush(&mut self) {
         if self.local_hashes > 0 {
-            let elapsed = self.last_flush.elapsed().as_secs_f64();
-            self.atomic_stats.update_hashrate(self.local_hashes, elapsed);
+            // 只记录哈希数，不计算算力
+            self.atomic_stats.record_hashes(self.local_hashes);
             self.local_hashes = 0;
         }
 
@@ -364,6 +346,11 @@ pub struct SoftwareDevice {
 
     /// 批量统计更新器
     batch_stats_updater: Arc<std::sync::Mutex<BatchStatsUpdater>>,
+
+    /// 挖矿任务句柄
+    mining_task_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    /// 挖矿任务停止信号
+    mining_stop_signal: Arc<AtomicBool>,
 }
 
 impl SoftwareDevice {
@@ -409,6 +396,8 @@ impl SoftwareDevice {
             temperature_capability_supported: Arc::new(AtomicBool::new(false)),
             result_sender: None,
             batch_stats_updater,
+            mining_task_handle: Arc::new(Mutex::new(None)),
+            mining_stop_signal: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -455,6 +444,8 @@ impl SoftwareDevice {
             temperature_capability_supported: Arc::new(AtomicBool::new(false)),
             result_sender: None,
             batch_stats_updater,
+            mining_task_handle: Arc::new(Mutex::new(None)),
+            mining_stop_signal: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -463,21 +454,101 @@ impl SoftwareDevice {
         self.result_sender = Some(sender);
     }
 
-    /// 检查哈希是否满足目标难度
-    fn meets_target(&self, hash: &[u8], target: &[u8]) -> bool {
-        debug_assert_eq!(hash.len(), 32);
-        debug_assert_eq!(target.len(), 32);
-        unsafe {
-            let hash_u64 = &*(hash.as_ptr() as *const [u64; 4]);
-            let target_u64 = &*(target.as_ptr() as *const [u64; 4]);
-            for i in 0..4 {
-                let h = u64::from_be(hash_u64[i]);
-                let t = u64::from_be(target_u64[i]);
-                if h < t { return true; }
-                if h > t { return false; }
+    /// 静态版本的挖矿方法，用于在挖矿循环中调用
+    async fn mine_work_static(
+        work: &Work,
+        device_id: u32,
+        target_hashrate: f64,
+        error_rate: f64,
+        batch_size: u32,
+        atomic_stats: &Arc<AtomicStats>,
+        result_sender: &Option<mpsc::UnboundedSender<MiningResult>>,
+        last_mining_time: &Arc<RwLock<Option<Instant>>>,
+    ) -> Result<Option<MiningResult>, DeviceError> {
+        let start_time = Instant::now();
+        let mut hashes_done = 0u64;
+        let mut found_solution = None;
+
+        // 根据目标算力计算批次大小
+        let adjusted_batch_size = if target_hashrate > 0.0 {
+            (target_hashrate / 10.0).max(batch_size as f64).min(batch_size as f64 * 2.0) as u32
+        } else {
+            batch_size
+        };
+
+        // 执行实际的哈希计算循环
+        for _ in 0..adjusted_batch_size {
+            // 生成随机nonce
+            let nonce = fastrand::u32(..);
+
+            // 构建区块头数据
+            let mut header_data = work.header.clone();
+            if header_data.len() >= 4 {
+                // 将nonce写入区块头的最后4个字节
+                let nonce_bytes = nonce.to_le_bytes();
+                let start_idx = header_data.len() - 4;
+                header_data[start_idx..].copy_from_slice(&nonce_bytes);
+            }
+
+            // 执行优化的SHA256双重哈希计算
+            let hash = optimized_double_sha256(&header_data);
+            hashes_done += 1;
+
+            // 检查是否满足目标难度
+            let meets_target = cgminer_core::meets_target(&hash, &work.target);
+
+            // 模拟错误率
+            let has_error = fastrand::f64() < error_rate;
+
+            if meets_target && !has_error {
+                let result = MiningResult::new(
+                    work.id,
+                    device_id,
+                    nonce,
+                    hash.to_vec(),
+                    true,
+                );
+
+                // 立即上报找到的解
+                if let Some(ref sender) = result_sender {
+                    if let Err(_) = sender.send(result.clone()) {
+                        debug!("设备 {} 结果通道已关闭", device_id);
+                        return Ok(None);
+                    }
+                    debug!("💎 设备 {} 立即上报解: nonce={:08x}", device_id, nonce);
+                } else {
+                    // 如果没有通道，保持原有行为
+                    debug!("设备 {} 找到有效解: nonce={:08x}", device_id, nonce);
+                    found_solution = Some(result);
+                }
+                break; // 找到解后退出循环
+            }
+
+            // 使用平台特定的CPU让出策略优化
+            if hashes_done % platform_optimization::get_platform_yield_frequency() == 0 {
+                tokio::task::yield_now().await;
             }
         }
-        false
+
+        let elapsed = start_time.elapsed().as_secs_f64();
+
+        // 更新统计信息
+        // 使用原子统计更新 - 无锁操作
+        if found_solution.is_some() {
+            atomic_stats.increment_accepted();
+        }
+
+        // 基于实际哈希次数更新算力统计
+        atomic_stats.record_hashes(hashes_done);
+
+        // 更新最后挖矿时间
+        {
+            if let Ok(mut last_time) = last_mining_time.write() {
+                *last_time = Some(Instant::now());
+            }
+        }
+
+        Ok(found_solution)
     }
 
     /// 执行真实的挖矿过程（基于实际哈希次数）
@@ -515,7 +586,7 @@ impl SoftwareDevice {
             hashes_done += 1;
 
             // 检查是否满足目标难度
-            let meets_target = self.meets_target(&hash, &work.target);
+            let meets_target = cgminer_core::meets_target(&hash, &work.target);
 
             // 模拟错误率
             let has_error = fastrand::f64() < self.error_rate;
@@ -559,7 +630,7 @@ impl SoftwareDevice {
         }
 
         // 基于实际哈希次数更新算力统计
-        self.atomic_stats.update_hashrate(hashes_done, elapsed);
+        self.atomic_stats.record_hashes(hashes_done);
 
         // 更新最后挖矿时间
         {
@@ -707,6 +778,7 @@ impl MiningDevice for SoftwareDevice {
             }
         }
 
+        // 设置状态为运行中
         {
             let mut status = self.status.write().map_err(|e| {
                 DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
@@ -714,14 +786,84 @@ impl MiningDevice for SoftwareDevice {
             *status = DeviceStatus::Running;
         }
 
+        // 重置停止信号
+        self.mining_stop_signal.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        // 启动持续的挖矿循环任务
+        let work_queue = self.work_queue.clone();
+        let atomic_stats = self.atomic_stats.clone();
+        let result_sender = self.result_sender.clone();
+        let target_hashrate = self.target_hashrate;
+        let error_rate = self.error_rate;
+        let batch_size = self.batch_size;
+        let stop_signal = self.mining_stop_signal.clone();
+        let last_mining_time = self.last_mining_time.clone();
+
+        let mining_task = tokio::spawn(async move {
+            info!("🚀 设备 {} 挖矿循环已启动，目标算力: {:.2} H/s", device_id, target_hashrate);
+
+            while !stop_signal.load(std::sync::atomic::Ordering::Relaxed) {
+                // 从工作队列获取工作
+                if let Some(work) = work_queue.dequeue_work() {
+                    debug!("设备 {} 开始处理工作: {}", device_id, work.id);
+
+                    // 执行挖矿
+                    if let Ok(result) = Self::mine_work_static(
+                        &work,
+                        device_id,
+                        target_hashrate,
+                        error_rate,
+                        batch_size,
+                        &atomic_stats,
+                        &result_sender,
+                        &last_mining_time,
+                    ).await {
+                        if result.is_some() {
+                            debug!("设备 {} 完成工作处理: {}", device_id, work.id);
+                        }
+                    } else {
+                        debug!("设备 {} 工作处理出错: {}", device_id, work.id);
+                    }
+                } else {
+                    // 没有工作时短暂休眠，避免空转
+                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                }
+            }
+
+            info!("设备 {} 挖矿循环已停止", device_id);
+        });
+
+        // 保存任务句柄
+        {
+            let mut handle = self.mining_task_handle.lock().map_err(|e| {
+                DeviceError::hardware_error(format!("Failed to acquire mutex: {}", e))
+            })?;
+            *handle = Some(mining_task);
+        }
+
         self.start_time = Some(Instant::now());
-        info!("软算法设备 {} 启动完成", device_id);
+        info!("软算法设备 {} 启动完成，挖矿循环已激活", device_id);
         Ok(())
     }
 
     /// 停止设备
     async fn stop(&mut self) -> Result<(), DeviceError> {
         info!("停止软算法设备 {}", self.device_id());
+
+        // 设置停止信号
+        self.mining_stop_signal.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // 停止挖矿任务
+        {
+            let mut handle = self.mining_task_handle.lock().map_err(|e| {
+                DeviceError::hardware_error(format!("Failed to acquire mutex: {}", e))
+            })?;
+
+            if let Some(task_handle) = handle.take() {
+                task_handle.abort();
+                info!("设备 {} 挖矿任务已停止", self.device_id());
+            }
+        }
 
         {
             let mut status = self.status.write().map_err(|e| {
@@ -797,15 +939,42 @@ impl MiningDevice for SoftwareDevice {
         Ok(status.clone())
     }
 
-    /// 获取设备统计信息（阶段2优化 - 使用原子统计）
+    /// 获取设备统计信息（修改为支持核心层算力计算）
     async fn get_stats(&self) -> Result<DeviceStats, DeviceError> {
         // 强制刷新批量统计更新器
         if let Ok(mut updater) = self.batch_stats_updater.try_lock() {
             updater.force_flush();
         }
 
-        // 使用原子统计 - 无锁操作，消除读写锁竞争
-        let mut stats = self.atomic_stats.to_device_stats();
+        // 获取原始统计数据
+        let (total_hashes, start_time_nanos, last_update_nanos) = self.atomic_stats.get_raw_stats();
+
+        // 计算设备算力
+        let current_time_nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+
+        // 计算当前算力（基于最近一段时间的哈希数）
+        let recent_time_window = 5.0; // 5秒窗口
+        let time_since_last_update = (current_time_nanos - last_update_nanos) as f64 / 1_000_000_000.0;
+        let current_hashrate = if time_since_last_update > 0.0 && time_since_last_update < recent_time_window {
+            // 如果最近有更新，使用目标算力作为当前算力的估计
+            self.target_hashrate
+        } else {
+            0.0 // 如果太久没有更新，算力为0
+        };
+
+        // 计算平均算力（基于总哈希数）
+        let total_elapsed = (current_time_nanos - start_time_nanos) as f64 / 1_000_000_000.0;
+        let average_hashrate = if total_elapsed > 0.0 {
+            total_hashes as f64 / total_elapsed
+        } else {
+            0.0
+        };
+
+        // 使用计算出的算力创建统计信息
+        let mut stats = self.atomic_stats.to_device_stats_with_hashrate(current_hashrate, average_hashrate);
 
         // 更新运行时间
         if let Some(start_time) = self.start_time {
@@ -815,8 +984,11 @@ impl MiningDevice for SoftwareDevice {
         // 获取工作队列统计信息
         let queue_stats = self.work_queue.get_stats();
         debug!(
-            "设备 {} 队列统计: 待处理={}, 活跃={}, 已完成={}",
+            "设备 {} 统计: 总哈希={}, 当前算力={:.2} H/s, 平均算力={:.2} H/s, 队列: 待处理={}, 活跃={}, 已完成={}",
             self.device_id(),
+            total_hashes,
+            current_hashrate,
+            average_hashrate,
             queue_stats.pending_count,
             queue_stats.active_count,
             queue_stats.completed_count

@@ -306,23 +306,37 @@ impl AtomicStatsManager {
         self.global_stats.clone()
     }
 
-    /// 批量聚合所有设备统计到全局统计
+    /// 聚合所有设备的统计信息
     pub fn aggregate_stats(&self) -> DeviceStats {
         let mut total_hashes = 0u64;
         let mut total_accepted = 0u64;
         let mut total_rejected = 0u64;
         let mut total_errors = 0u64;
         let mut total_hashrate = 0.0f64;
-        let mut device_count = 0usize;
+        let device_count = self.device_stats.len();
 
         for stats in self.device_stats.values() {
-            let device_stats = stats.to_device_stats();
+            // 获取原始数据并计算算力
+            let (device_hashes, start_time, last_update) = stats.get_raw_stats();
+            let current_time = std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64;
+
+            // 计算设备算力
+            let total_elapsed = (current_time - start_time) as f64 / 1_000_000_000.0;
+            let device_hashrate = if total_elapsed > 0.0 {
+                device_hashes as f64 / total_elapsed
+            } else {
+                0.0
+            };
+
+            let device_stats = stats.to_device_stats_with_hashrate(device_hashrate, device_hashrate);
             total_hashes += device_stats.total_hashes;
             total_accepted += device_stats.accepted_work;
             total_rejected += device_stats.rejected_work;
             total_errors += device_stats.hardware_errors;
             total_hashrate += device_stats.current_hashrate.hashes_per_second;
-            device_count += 1;
         }
 
         // 更新全局统计
@@ -341,7 +355,8 @@ impl AtomicStatsManager {
         };
         global.average_hashrate.store(avg_hashrate.to_bits(), Ordering::Relaxed);
 
-        global.to_device_stats()
+        // 计算全局算力并返回统计信息
+        global.to_device_stats_with_hashrate(total_hashrate, avg_hashrate)
     }
 
     /// 启动后台统计聚合任务
