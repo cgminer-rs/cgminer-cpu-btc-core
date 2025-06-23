@@ -370,7 +370,7 @@ impl SoftwareDevice {
         let atomic_stats = Arc::new(AtomicStats::new(device_id));
 
         // 创建无锁工作队列 - 替换Mutex<Option<Work>>
-        let work_queue = Arc::new(crate::concurrent_optimization::LockFreeWorkQueue::new(1000));
+        let work_queue = Arc::new(crate::concurrent_optimization::LockFreeWorkQueue::new(3)); // CGMiner风格：小队列
 
         // 创建批量统计更新器
         let batch_stats_updater = Arc::new(std::sync::Mutex::new(
@@ -422,7 +422,7 @@ impl SoftwareDevice {
         let atomic_stats = Arc::new(AtomicStats::new(device_id));
 
         // 创建无锁工作队列
-        let work_queue = Arc::new(crate::concurrent_optimization::LockFreeWorkQueue::new(1000));
+        let work_queue = Arc::new(crate::concurrent_optimization::LockFreeWorkQueue::new(3)); // CGMiner风格：小队列
 
         // 创建批量统计更新器
         let batch_stats_updater = Arc::new(std::sync::Mutex::new(
@@ -843,7 +843,7 @@ impl MiningDevice for SoftwareDevice {
                     }
                 } else {
                     // 没有工作时短暂休眠，避免空转
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
                 }
             }
 
@@ -958,10 +958,8 @@ impl MiningDevice for SoftwareDevice {
 
     /// 获取设备统计信息（修改为支持核心层算力计算）
     async fn get_stats(&self) -> Result<DeviceStats, DeviceError> {
-        // 强制刷新批量统计更新器
-        if let Ok(mut updater) = self.batch_stats_updater.try_lock() {
-            updater.force_flush();
-        }
+        // 🚀 移除批量统计刷新，改为即时统计，避免锁竞争阻塞工作线程
+        // 原代码：if let Ok(mut updater) = self.batch_stats_updater.try_lock() { updater.force_flush(); }
 
         // 更新cgminer风格的算力追踪器
         self.hashrate_tracker.update_averages();
