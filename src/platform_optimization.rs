@@ -1,261 +1,98 @@
-//! 平台优化模块
+//! # 平台特定优化模块
 //!
-//! 提供针对不同平台和CPU架构的优化配置和策略
-
-use serde::{Deserialize, Serialize};
-
-/// 平台优化配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PlatformOptimization {
-    /// 平台名称
-    pub platform_name: String,
-    /// CPU架构
-    pub cpu_arch: String,
-    /// 优化级别
-    pub optimization_level: OptimizationLevel,
-    /// CPU让出频率
-    pub yield_frequency: u64,
-    /// 批处理大小优化
-    pub batch_size_multiplier: f64,
-    /// 线程数优化
-    pub thread_count_multiplier: f64,
-    /// 内存对齐优化
-    pub memory_alignment: usize,
-    /// SIMD优化配置
-    pub simd_config: SimdConfig,
-}
-
-/// 优化级别
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum OptimizationLevel {
-    /// 基础优化
-    Basic,
-    /// 标准优化
-    Standard,
-    /// 高级优化
-    Advanced,
-    /// 极致优化
-    Extreme,
-}
-
-/// SIMD优化配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SimdConfig {
-    /// 是否启用SIMD
-    pub enabled: bool,
-    /// 支持的指令集
-    pub instruction_sets: Vec<String>,
-    /// 向量宽度
-    pub vector_width: usize,
-    /// 并行度
-    pub parallelism: usize,
-}
-
-impl PlatformOptimization {
-    /// 获取当前平台的优化配置
-    pub fn get_current_platform_config() -> Self {
-        let platform_name = std::env::consts::OS.to_string();
-        let cpu_arch = std::env::consts::ARCH.to_string();
-
-        match (platform_name.as_str(), cpu_arch.as_str()) {
-            ("macos", "aarch64") => Self::apple_silicon_config(),
-            ("macos", "x86_64") => Self::intel_mac_config(),
-            ("linux", "x86_64") => Self::linux_x86_64_config(),
-            ("linux", "aarch64") => Self::linux_arm64_config(),
-            ("windows", "x86_64") => Self::windows_x86_64_config(),
-            _ => Self::default_config(),
-        }
-    }
-
-    /// Apple Silicon (M1/M2/M3/M4) 优化配置
-    fn apple_silicon_config() -> Self {
-        Self {
-            platform_name: "macOS".to_string(),
-            cpu_arch: "aarch64".to_string(),
-            optimization_level: OptimizationLevel::Extreme,
-            yield_frequency: 10000, // Apple Silicon 高效核心，较少让出
-            batch_size_multiplier: 1.5,
-            thread_count_multiplier: 0.8, // 80% CPU使用率
-            memory_alignment: 64, // Apple Silicon 缓存行大小
-            simd_config: SimdConfig {
-                enabled: true,
-                instruction_sets: vec![
-                    "neon".to_string(),
-                    "crypto".to_string(),
-                    "sha2".to_string(),
-                    "aes".to_string(),
-                ],
-                vector_width: 128,
-                parallelism: 4,
-            },
-        }
-    }
-
-    /// Intel Mac 优化配置
-    fn intel_mac_config() -> Self {
-        Self {
-            platform_name: "macOS".to_string(),
-            cpu_arch: "x86_64".to_string(),
-            optimization_level: OptimizationLevel::Advanced,
-            yield_frequency: 8000,
-            batch_size_multiplier: 1.2,
-            thread_count_multiplier: 0.75,
-            memory_alignment: 64,
-            simd_config: SimdConfig {
-                enabled: true,
-                instruction_sets: vec![
-                    "avx2".to_string(),
-                    "sha".to_string(),
-                    "aes".to_string(),
-                    "sse4.2".to_string(),
-                ],
-                vector_width: 256,
-                parallelism: 8,
-            },
-        }
-    }
-
-    /// Linux x86_64 优化配置
-    fn linux_x86_64_config() -> Self {
-        Self {
-            platform_name: "Linux".to_string(),
-            cpu_arch: "x86_64".to_string(),
-            optimization_level: OptimizationLevel::Advanced,
-            yield_frequency: 5000,
-            batch_size_multiplier: 1.3,
-            thread_count_multiplier: 0.85,
-            memory_alignment: 64,
-            simd_config: SimdConfig {
-                enabled: true,
-                instruction_sets: vec![
-                    "avx2".to_string(),
-                    "avx512".to_string(),
-                    "sha".to_string(),
-                    "aes".to_string(),
-                ],
-                vector_width: 512,
-                parallelism: 16,
-            },
-        }
-    }
-
-    /// Linux ARM64 优化配置
-    fn linux_arm64_config() -> Self {
-        Self {
-            platform_name: "Linux".to_string(),
-            cpu_arch: "aarch64".to_string(),
-            optimization_level: OptimizationLevel::Standard,
-            yield_frequency: 6000,
-            batch_size_multiplier: 1.1,
-            thread_count_multiplier: 0.8,
-            memory_alignment: 64,
-            simd_config: SimdConfig {
-                enabled: true,
-                instruction_sets: vec![
-                    "neon".to_string(),
-                    "crypto".to_string(),
-                ],
-                vector_width: 128,
-                parallelism: 4,
-            },
-        }
-    }
-
-    /// Windows x86_64 优化配置
-    fn windows_x86_64_config() -> Self {
-        Self {
-            platform_name: "Windows".to_string(),
-            cpu_arch: "x86_64".to_string(),
-            optimization_level: OptimizationLevel::Standard,
-            yield_frequency: 7000,
-            batch_size_multiplier: 1.0,
-            thread_count_multiplier: 0.75,
-            memory_alignment: 64,
-            simd_config: SimdConfig {
-                enabled: true,
-                instruction_sets: vec![
-                    "avx2".to_string(),
-                    "sha".to_string(),
-                    "aes".to_string(),
-                ],
-                vector_width: 256,
-                parallelism: 8,
-            },
-        }
-    }
-
-    /// 默认优化配置
-    fn default_config() -> Self {
-        Self {
-            platform_name: "Unknown".to_string(),
-            cpu_arch: "Unknown".to_string(),
-            optimization_level: OptimizationLevel::Basic,
-            yield_frequency: 10000,
-            batch_size_multiplier: 1.0,
-            thread_count_multiplier: 0.5,
-            memory_alignment: 32,
-            simd_config: SimdConfig {
-                enabled: false,
-                instruction_sets: vec![],
-                vector_width: 128,
-                parallelism: 1,
-            },
-        }
-    }
-
-    /// 打印优化信息
-    pub fn print_optimization_info(&self) {
-        println!("🚀 平台优化配置:");
-        println!("   平台: {} ({})", self.platform_name, self.cpu_arch);
-        println!("   优化级别: {:?}", self.optimization_level);
-        println!("   CPU让出频率: {}", self.yield_frequency);
-        println!("   批处理倍数: {:.2}", self.batch_size_multiplier);
-        println!("   线程数倍数: {:.2}", self.thread_count_multiplier);
-        println!("   内存对齐: {} 字节", self.memory_alignment);
-
-        if self.simd_config.enabled {
-            println!("   SIMD优化: 启用");
-            println!("   指令集: {:?}", self.simd_config.instruction_sets);
-            println!("   向量宽度: {} 位", self.simd_config.vector_width);
-            println!("   并行度: {}", self.simd_config.parallelism);
-        } else {
-            println!("   SIMD优化: 禁用");
-        }
-    }
-}
+//! 本模块提供跨平台的CPU挖矿优化功能，针对不同操作系统和硬件架构
+//! 提供特定的优化策略，以最大化CPU挖矿性能。
+//!
+//! ## 🚀 平台优化特性
+//!
+//! ### CPU让出策略优化
+//! - 🔧 **macOS**: 1000次哈希/让出 (优化响应性)
+//! - 🔧 **Linux**: 2000次哈希/让出 (平衡性能与响应)
+//! - 🔧 **Windows**: 1500次哈希/让出 (兼容性优先)
+//! - 🔧 **其他平台**: 1000次哈希/让出 (保守策略)
+//!
+//! ### 高性能支持检测
+//! - ✅ **x86_64**: 完全支持，包括SIMD优化
+//! - ✅ **aarch64**: 完全支持，ARM64优化
+//! - ⚠️ **其他架构**: 基础支持，性能可能受限
+//!
+//! ## 📊 性能调优参数
+//!
+//! | 平台 | 让出频率 | 优化重点 | 特殊考虑 |
+//! |------|----------|----------|----------|
+//! | macOS | 1000 | 响应性 | 系统调度优化 |
+//! | Linux | 2000 | 吞吐量 | 内核调度配合 |
+//! | Windows | 1500 | 兼容性 | 多版本支持 |
+//! | 其他 | 1000 | 稳定性 | 保守配置 |
+//!
+//! ## 🎯 设计目标
+//!
+//! 1. **跨平台兼容**: 统一API，平台特定实现
+//! 2. **性能最优**: 针对每个平台的特性优化
+//! 3. **简单易用**: 最小化配置，自动检测
+//! 4. **向后兼容**: 支持未知平台的降级处理
+//!
+//! ## 🔄 使用示例
+//!
+//! ```rust
+//! use cgminer_cpu_btc_core::platform_optimization;
+//!
+//! // 获取平台信息
+//! let platform_info = platform_optimization::get_platform_info();
+//! println!("运行平台: {}", platform_info);
+//!
+//! // 检查高性能支持
+//! if platform_optimization::supports_high_performance() {
+//!     println!("✅ 当前平台支持高性能优化");
+//! }
+//!
+//! // 在挖矿循环中使用
+//! for i in 0..batch_size {
+//!     // 执行哈希计算
+//!     let hash = calculate_hash(&data);
+//!
+//!     // 平台特定的CPU让出
+//!     if i % platform_optimization::get_platform_yield_frequency() == 0 {
+//!         tokio::task::yield_now().await;
+//!     }
+//! }
+//! ```
 
 /// 获取平台特定的CPU让出频率
+///
+/// 这个函数在挖矿循环中被使用，用于优化CPU让出策略
 pub fn get_platform_yield_frequency() -> u64 {
-    let config = PlatformOptimization::get_current_platform_config();
-    config.yield_frequency
+    // 根据平台返回合适的让出频率
+    #[cfg(target_os = "macos")]
+    {
+        1000 // macOS: 每1000次哈希让出一次
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        2000 // Linux: 每2000次哈希让出一次
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        1500 // Windows: 每1500次哈希让出一次
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        1000 // 其他平台: 保守的让出频率
+    }
 }
 
-/// 获取平台特定的批处理大小倍数
-pub fn get_platform_batch_size_multiplier() -> f64 {
-    let config = PlatformOptimization::get_current_platform_config();
-    config.batch_size_multiplier
+/// 获取平台信息字符串（用于日志输出）
+pub fn get_platform_info() -> String {
+    format!("{}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH)
 }
 
-/// 获取平台特定的线程数倍数
-pub fn get_platform_thread_count_multiplier() -> f64 {
-    let config = PlatformOptimization::get_current_platform_config();
-    config.thread_count_multiplier
-}
-
-/// 获取平台特定的内存对齐大小
-pub fn get_platform_memory_alignment() -> usize {
-    let config = PlatformOptimization::get_current_platform_config();
-    config.memory_alignment
-}
-
-/// 检查平台是否支持SIMD优化
-pub fn is_simd_supported() -> bool {
-    let config = PlatformOptimization::get_current_platform_config();
-    config.simd_config.enabled
-}
-
-/// 获取支持的SIMD指令集
-pub fn get_supported_simd_instructions() -> Vec<String> {
-    let config = PlatformOptimization::get_current_platform_config();
-    config.simd_config.instruction_sets
+/// 检查当前平台是否支持高性能优化
+pub fn supports_high_performance() -> bool {
+    // 简化的平台检查
+    cfg!(any(target_arch = "x86_64", target_arch = "aarch64"))
 }

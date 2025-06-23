@@ -12,7 +12,7 @@ rustflags = [
     # 使用Apple M1架构（M4兼容）
     "-C", "target-cpu=apple-m1",
     # 启用硬件加速特性 - 重点优化SHA-256和AES
-    "-C", "target-feature=+neon,+crypto,+aes,+sha2,+sha3,+crc",
+    "-C", "target-feature=+neon,+aes,+sha2,+sha3,+crc",
     # 最高优化级别
     "-C", "opt-level=3",
     # 单个代码生成单元 - 最大化内联优化

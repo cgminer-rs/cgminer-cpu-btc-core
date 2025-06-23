@@ -14,7 +14,7 @@ categories = ["hardware-support", "algorithms"]
 cgminer-core = { path = "../cgminer-core" }
 
 # Async runtime
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.40", features = ["full"] }
 futures = "0.3"
 
 # Serialization
@@ -29,9 +29,11 @@ thiserror = "1.0"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 hex = "0.4"
-sha2 = { version = "0.10", features = ["asm"] }
-async-trait = "0.1"
-fastrand = "2.0"
+sha2 = "0.10"
+  async-trait = "0.1"
+  fastrand = "2.1"
+  libc = "0.2"
+  crossbeam = { version = "0.8", optional = true }
 
 # CPU affinity and system info
 core_affinity = { version = "0.8", optional = true }
@@ -49,6 +51,12 @@ tracing = "0.1"
 version = "11.0"
 optional = true
 
+# 添加硬件加速所需的依赖
+# crossbeam已在上面定义
+
+[dependencies.lazy_static]
+version = "1.4"
+
 [dependencies.num-bigint]
 version = "0.4"
 optional = true
@@ -65,8 +73,11 @@ optional = true
 version = "0.1"
 optional = true
 
+[dependencies.tokio-util]
+version = "0.7"
+
 [features]
-default = ["simd-optimizations", "thermal-management", "power-management", "cpu-affinity", "temperature-monitoring"]
+default = ["simd-optimizations", "thermal-management", "power-management", "cpu-affinity", "temperature-monitoring", "hardware-acceleration", "crossbeam"]
 
 # SIMD优化 - 启用向量化指令
 simd-optimizations = []
@@ -85,6 +96,9 @@ cpu-affinity = ["core_affinity"]
 
 # 高级CPU检测 - 详细的CPU特性检测
 advanced-cpu-detection = ["raw-cpuid"]
+
+# 硬件加速 - 启用SHA256硬件加速
+hardware-acceleration = ["raw-cpuid", "crossbeam"]
 
 # 调试日志 - 详细的挖矿过程日志
 debug-logging = []
@@ -276,4 +290,8 @@ path = "examples/benchmark_demo.rs"
 # 基准测试
 [[bench]]
 name = "cpu_btc_core_benchmark"
+harness = false
+
+[[bench]]
+name = "stats_reporting_benchmark"
 harness = false

@@ -1,4 +1,41 @@
-//! 软算法挖矿核心实现
+//! # CPU比特币挖矿核心实现
+//!
+//! 本模块实现了专门用于CPU比特币挖矿的核心算法和管理功能。
+//! 该实现遵循cgminer-core标准接口，提供高性能的CPU挖矿能力。
+//!
+//! ## 🚀 核心特性
+//!
+//! ### 挖矿算法
+//! - ✅ 真实SHA256双重哈希计算
+//! - ✅ 比特币区块头完整结构
+//! - ✅ 多设备并行挖矿支持
+//! - ✅ 智能设备数量管理 (自动限制为CPU核心数)
+//!
+//! ### 性能优化
+//! - ⚡ CPU亲和性绑定 (可选)
+//! - ⚡ 性能优化器集成
+//! - ⚡ 批量工作处理
+//! - ⚡ 平台特定优化
+//!
+//! ### 监控功能
+//! - 📊 实时统计信息收集
+//! - 📊 CGMiner风格结果上报
+//! - 📊 健康检查和错误恢复
+//! - 📊 详细的设备状态跟踪
+//!
+//! ## 📦 主要组件
+//!
+//! - [`SoftwareMiningCore`]: 主要的挖矿核心实现
+//! - 设备管理: 支持最多64个虚拟设备
+//! - 结果收集: 支持即时上报和批量收集
+//! - 配置管理: 支持环境变量和配置文件
+//!
+//! ## 🎯 设计特点
+//!
+//! 1. **自适应设备数量**: 自动根据CPU核心数调整设备数量
+//! 2. **灵活配置**: 支持多种算力范围和错误率配置
+//! 3. **高兼容性**: 完全兼容cgminer-core接口标准
+//! 4. **企业级特性**: 完整的生命周期管理和错误处理
 
 use cgminer_core::{
     MiningCore, CoreInfo, CoreCapabilities, CoreConfig, CoreStats, CoreError,
@@ -10,7 +47,7 @@ use crate::device::SoftwareDevice;
 use crate::performance::PerformanceOptimizer;
 use crate::cpu_affinity::{CpuAffinityManager, CpuAffinityStrategy};
 // 平台优化模块
-use crate::platform_optimization::PlatformOptimization;
+use crate::platform_optimization;
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -408,9 +445,13 @@ impl MiningCore for SoftwareMiningCore {
         info!("开始初始化优化CPU挖矿核心: {}", config.name);
         debug!("配置参数: {:?}", config.custom_params);
 
-        // 打印平台优化信息
-        let platform_config = PlatformOptimization::get_current_platform_config();
-        platform_config.print_optimization_info();
+        // 打印平台信息
+        info!("🚀 平台信息: {}", platform_optimization::get_platform_info());
+        if platform_optimization::supports_high_performance() {
+            info!("✅ 当前平台支持高性能优化");
+        } else {
+            info!("⚠️  当前平台性能优化有限");
+        }
 
         // 验证配置
         debug!("验证配置...");
@@ -426,18 +467,11 @@ impl MiningCore for SoftwareMiningCore {
 
         // 初始化CPU绑定管理器
         if perf_config.cpu_affinity.enabled {
-            let strategy = match perf_config.cpu_affinity.strategy.as_str() {
-                "round_robin" => CpuAffinityStrategy::RoundRobin,
-                "intelligent" => CpuAffinityStrategy::Intelligent,
-                "load_balanced" => CpuAffinityStrategy::LoadBalanced,
-                "physical_cores_only" => CpuAffinityStrategy::PhysicalCoresOnly,
-                "performance_first" => CpuAffinityStrategy::PerformanceFirst,
-                _ => CpuAffinityStrategy::Intelligent,
-            };
+            let strategy = CpuAffinityStrategy::Intelligent; // 简化为固定策略
 
             let cpu_manager = CpuAffinityManager::new(true, strategy);
             self.cpu_affinity_manager = Some(Arc::new(RwLock::new(cpu_manager)));
-            info!("✅ CPU绑定管理器已启用，策略: {}", perf_config.cpu_affinity.strategy);
+            info!("✅ CPU绑定管理器已启用，策略: 智能分配");
         }
 
         // 创建设备
@@ -716,8 +750,6 @@ impl MiningCore for SoftwareMiningCore {
         Ok(healthy_devices >= health_threshold)
     }
 
-
-
     /// 验证配置
     fn validate_config(&self, config: &CoreConfig) -> Result<(), CoreError> {
         if config.name.is_empty() {
@@ -793,8 +825,6 @@ impl MiningCore for SoftwareMiningCore {
             custom_params,
         }
     }
-
-
 
     /// 关闭核心
     async fn shutdown(&mut self) -> Result<(), CoreError> {

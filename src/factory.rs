@@ -1,4 +1,66 @@
-//! 软算法核心工厂实现
+//! # CPU挖矿核心工厂实现
+//!
+//! 本模块实现了CPU挖矿核心的工厂模式，负责创建和配置挖矿核心实例。
+//! 遵循cgminer-core的CoreFactory标准接口，提供统一的核心创建和管理功能。
+//!
+//! ## 🏭 工厂模式特性
+//!
+//! ### [`SoftwareCoreFactory`] - 主要工厂类
+//! - 🔧 实现标准CoreFactory trait
+//! - 🔧 提供核心信息和能力描述
+//! - 🔧 支持异步核心创建
+//! - 🔧 完整的配置验证机制
+//!
+//! ## 🎯 核心功能
+//!
+//! ### 核心创建流程
+//! ```text
+//! 1. 配置验证 → 检查所有参数的有效性
+//! 2. 核心实例化 → 创建SoftwareMiningCore对象
+//! 3. 初始化配置 → 应用用户配置参数
+//! 4. 返回实例 → 提供可用的挖矿核心
+//! ```
+//!
+//! ### 配置验证功能
+//! - ✅ 设备数量范围检查 (1-100个设备)
+//! - ✅ 算力参数验证 (最小/最大算力合理性)
+//! - ✅ 错误率范围验证 (0.0-1.0)
+//! - ✅ 设备配置完整性检查
+//! - ✅ 自定义参数类型验证
+//!
+//! ### 默认配置提供
+//! - 📋 4个虚拟设备的标准配置
+//! - 📋 1-5 GH/s的算力范围
+//! - 📋 1%的默认错误率
+//! - 📋 1000的批处理大小
+//! - 📋 5秒的工作超时时间
+//!
+//! ## 🔄 使用示例
+//!
+//! ```rust
+//! use cgminer_cpu_btc_core::SoftwareCoreFactory;
+//! use cgminer_core::{CoreFactory, CoreConfig};
+//!
+//! // 创建工厂实例
+//! let factory = SoftwareCoreFactory::new();
+//!
+//! // 获取默认配置
+//! let config = factory.default_config();
+//!
+//! // 创建挖矿核心
+//! let core = factory.create_core(config).await?;
+//! ```
+//!
+//! ## ⚙️ 配置参数说明
+//!
+//! | 参数名 | 类型 | 默认值 | 说明 |
+//! |--------|------|--------|------|
+//! | `device_count` | u64 | 4 | 虚拟设备数量 |
+//! | `min_hashrate` | f64 | 1e9 | 最小算力 (H/s) |
+//! | `max_hashrate` | f64 | 5e9 | 最大算力 (H/s) |
+//! | `error_rate` | f64 | 0.01 | 模拟错误率 |
+//! | `batch_size` | u64 | 1000 | 批处理大小 |
+//! | `work_timeout_ms` | u64 | 5000 | 工作超时 (ms) |
 
 use crate::core::SoftwareMiningCore;
 use cgminer_core::{
