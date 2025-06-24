@@ -480,11 +480,12 @@ impl SoftwareDevice {
         let mut hashes_done = 0u64;
         let mut found_solution = None;
 
-        // 根据目标算力计算批次大小
-        let adjusted_batch_size = if target_hashrate > 0.0 {
-            (target_hashrate / 10.0).max(batch_size as f64).min(batch_size as f64 * 2.0) as u32
+        // 🔧 修复：使用大批次确保算力稳定，与连续挖矿模式保持一致
+        let adjusted_batch_size = if batch_size >= 50000 {
+            batch_size  // 如果配置的批次已经够大，直接使用
         } else {
-            batch_size
+            // 对于小批次配置，强制使用大批次以保证算力稳定
+            std::cmp::max(batch_size * 10, 50000)
         };
 
         // 执行实际的哈希计算循环
@@ -572,13 +573,12 @@ impl SoftwareDevice {
         let mut hashes_done = 0u64;
         let mut found_solution = None;
 
-        // 根据目标算力计算批次大小 - 优化为更大的批次以提高效率
-        let target_hashes_per_second = self.target_hashrate;
-        let adjusted_batch_size = if target_hashes_per_second > 0.0 {
-            // 使用更大的批次大小来提高实际算力
-            (target_hashes_per_second / 5.0).max(self.batch_size as f64).min(self.batch_size as f64 * 5.0) as u32
+        // 🔧 修复：使用大批次确保算力稳定，与连续挖矿模式保持一致
+        let adjusted_batch_size = if self.batch_size >= 50000 {
+            self.batch_size  // 如果配置的批次已经够大，直接使用
         } else {
-            self.batch_size
+            // 对于小批次配置，强制使用大批次以保证算力稳定
+            std::cmp::max(self.batch_size * 10, 50000)
         };
 
         // 执行实际的哈希计算循环
