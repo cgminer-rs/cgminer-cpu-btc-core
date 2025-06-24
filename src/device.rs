@@ -472,6 +472,7 @@ impl SoftwareDevice {
         error_rate: f64,
         batch_size: u32,
         atomic_stats: &Arc<AtomicStats>,
+        hashrate_tracker: &Arc<HashrateTracker>,
         result_sender: &Option<mpsc::UnboundedSender<MiningResult>>,
         last_mining_time: &Arc<RwLock<Option<Instant>>>,
     ) -> Result<Option<MiningResult>, DeviceError> {
@@ -546,10 +547,12 @@ impl SoftwareDevice {
         // 使用原子统计更新 - 无锁操作
         if found_solution.is_some() {
             atomic_stats.increment_accepted();
+            hashrate_tracker.increment_accepted();
         }
 
-        // 基于实际哈希次数更新算力统计
+        // 🔧 修复：同时更新原子统计和CGMiner风格的算力追踪器
         atomic_stats.record_hashes(hashes_done);
+        hashrate_tracker.add_hashes(hashes_done);
 
         // 更新最后挖矿时间
         {
@@ -611,18 +614,8 @@ impl SoftwareDevice {
                     true,
                 );
 
-                // 立即上报找到的解
-                if let Some(ref sender) = self.result_sender {
-                    if let Err(_) = sender.send(result.clone()) {
-                        debug!("设备 {} 结果通道已关闭", device_id);
-                        return Ok(None);
-                    }
-                    debug!("💎 设备 {} 立即上报解: nonce={:08x}", device_id, nonce);
-                } else {
-                    // 如果没有通道，保持原有行为
-                    debug!("设备 {} 找到有效解: nonce={:08x}", device_id, nonce);
-                    found_solution = Some(result);
-                }
+                debug!("💎 设备 {} 找到有效解: nonce={:08x}", device_id, nonce);
+                found_solution = Some(result);
                 break; // 找到解后退出循环
             }
 
@@ -640,10 +633,8 @@ impl SoftwareDevice {
             self.atomic_stats.increment_accepted();
         }
 
-        // 基于实际哈希次数更新算力统计
+        // 🔧 修复：同时更新原子统计和CGMiner风格的算力追踪器
         self.atomic_stats.record_hashes(hashes_done);
-
-        // 更新cgminer风格的算力追踪器
         self.hashrate_tracker.add_hashes(hashes_done);
         if found_solution.is_some() {
             self.hashrate_tracker.increment_accepted();
@@ -706,6 +697,107 @@ impl SoftwareDevice {
             // 对于原子统计，没有温度管理器时保持默认值
         }
 
+        Ok(())
+    }
+
+    /// 启动连续计算模式 - 真正的高性能模式
+    pub async fn start_continuous_mining(&mut self) -> Result<(), DeviceError> {
+        let device_id = self.device_id();
+        info!("设备 {} 启动真正的高性能连续计算模式", device_id);
+
+        {
+            let mut status = self.status.write().map_err(|e| {
+                DeviceError::hardware_error(format!("Failed to acquire write lock: {}", e))
+            })?;
+            *status = DeviceStatus::Running;
+        }
+
+        self.mining_stop_signal.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        // 启动连续计算循环
+        let work_queue = self.work_queue.clone();
+        let atomic_stats = self.atomic_stats.clone();
+        let hashrate_tracker = self.hashrate_tracker.clone();
+        let result_sender = self.result_sender.clone();
+        let stop_signal = self.mining_stop_signal.clone();
+
+        let continuous_mining_task = tokio::spawn(async move {
+            info!("🔥 设备 {} 高性能连续计算循环已启动", device_id);
+
+            let mut current_work: Option<Arc<Work>> = None;
+            let mut nonce_iterator = 0u32;
+
+            while !stop_signal.load(std::sync::atomic::Ordering::Relaxed) {
+                // 检查是否有新的工作模板
+                if let Some(new_work) = work_queue.dequeue_work() {
+                    if current_work.as_ref().map_or(true, |cw| cw.id != new_work.id) {
+                        debug!("设备 {} 切换到新工作模板: {}", device_id, new_work.id);
+                        current_work = Some(new_work);
+                        nonce_iterator = 0; // 重置nonce
+                    }
+                }
+
+                // 如果没有工作模板，则等待
+                let work_template = match current_work {
+                    Some(ref work) => work.clone(),
+                    None => {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                        continue;
+                    }
+                };
+
+                // 🔥 核心紧凑循环 - 在这里最大化算力
+                let batch_size = 100_000u32; // 一次处理一个大批次
+                let mut hashes_done_in_batch = 0u64;
+
+                for i in 0..batch_size {
+                    let nonce = nonce_iterator.wrapping_add(i);
+
+                    let mut header_data = work_template.header.clone();
+                    let nonce_bytes = nonce.to_le_bytes();
+                    let start_idx = header_data.len() - 4;
+                    header_data[start_idx..].copy_from_slice(&nonce_bytes);
+
+                    let hash = optimized_double_sha256(&header_data);
+
+                    if cgminer_core::meets_target(&hash, &work_template.target) {
+                        let result = MiningResult::new(
+                            work_template.id,
+                            device_id,
+                            nonce,
+                            hash.to_vec(),
+                            true,
+                        );
+
+                        if let Some(ref sender) = result_sender {
+                            if sender.send(result.clone()).is_ok() {
+                                hashrate_tracker.increment_accepted();
+                                atomic_stats.increment_accepted();
+                            }
+                        }
+                    }
+                }
+                hashes_done_in_batch += batch_size as u64;
+                nonce_iterator = nonce_iterator.wrapping_add(batch_size);
+
+                // 批次完成后更新统计
+                atomic_stats.record_hashes(hashes_done_in_batch);
+                hashrate_tracker.add_hashes(hashes_done_in_batch);
+            }
+
+            info!("🏁 设备 {} 连续计算完成", device_id);
+        });
+
+        // 保存任务句柄
+        {
+            let mut handle = self.mining_task_handle.lock().map_err(|e| {
+                DeviceError::hardware_error(format!("Failed to acquire mutex: {}", e))
+            })?;
+            *handle = Some(continuous_mining_task);
+        }
+
+        self.start_time = Some(tokio::time::Instant::now());
+        info!("✅ 设备 {} 连续计算模式启动完成", device_id);
         Ok(())
     }
 }
@@ -809,6 +901,7 @@ impl MiningDevice for SoftwareDevice {
         // 启动持续的挖矿循环任务
         let work_queue = self.work_queue.clone();
         let atomic_stats = self.atomic_stats.clone();
+        let hashrate_tracker = self.hashrate_tracker.clone();
         let result_sender = self.result_sender.clone();
         let target_hashrate = self.target_hashrate;
         let error_rate = self.error_rate;
@@ -822,24 +915,25 @@ impl MiningDevice for SoftwareDevice {
             while !stop_signal.load(std::sync::atomic::Ordering::Relaxed) {
                 // 从工作队列获取工作
                 if let Some(work) = work_queue.dequeue_work() {
-                    debug!("设备 {} 开始处理工作: {}", device_id, work.id);
+                    debug!("设备 {} 开始处理工作", device_id);
 
-                    // 执行挖矿
+                    // 执行挖矿 - work现在是Arc<Work>，需要解引用
                     if let Ok(result) = Self::mine_work_static(
-                        &work,
+                        &*work,
                         device_id,
                         target_hashrate,
                         error_rate,
                         batch_size,
                         &atomic_stats,
+                        &hashrate_tracker,
                         &result_sender,
                         &last_mining_time,
                     ).await {
                         if result.is_some() {
-                            debug!("设备 {} 完成工作处理: {}", device_id, work.id);
+                            debug!("设备 {} 完成工作处理", device_id);
                         }
                     } else {
-                        debug!("设备 {} 工作处理出错: {}", device_id, work.id);
+                        debug!("设备 {} 工作处理出错", device_id);
                     }
                 } else {
                     // 没有工作时短暂休眠，避免空转
@@ -909,17 +1003,17 @@ impl MiningDevice for SoftwareDevice {
     }
 
     /// 提交工作到设备（简化版本 - 移除复杂的任务管理）
-    async fn submit_work(&mut self, work: Work) -> Result<(), DeviceError> {
+    async fn submit_work(&mut self, work: std::sync::Arc<Work>) -> Result<(), DeviceError> {
         let device_id = self.device_id();
 
-        // 使用无锁工作队列提交工作
-        match self.work_queue.enqueue_work(work.clone()) {
+        // 使用无锁工作队列提交工作 - 零拷贝
+        match self.work_queue.enqueue_work(work) {
             Ok(()) => {
-                debug!("设备 {} 成功提交工作到队列: {}", device_id, work.id);
+                debug!("设备 {} 成功提交工作到队列", device_id);
                 Ok(())
             }
             Err(rejected_work) => {
-                warn!("设备 {} 工作队列已满，丢弃工作: {}", device_id, rejected_work.id);
+                warn!("设备 {} 工作队列已满，丢弃工作", device_id);
                 // 队列满了不算错误，只是警告
                 Ok(())
             }
@@ -928,18 +1022,25 @@ impl MiningDevice for SoftwareDevice {
 
     /// 获取挖矿结果
     async fn get_result(&mut self) -> Result<Option<MiningResult>, DeviceError> {
-        // 立即上报模式：如果有结果通道，结果通过通道立即上报，这里返回None
-        if self.result_sender.is_some() {
-            return Ok(None);
-        }
-
-        // 传统模式：从工作队列获取工作并返回结果
+        // 🔧 修复：无论是否有结果通道，都要从工作队列获取并处理工作
         if let Some(work) = self.work_queue.dequeue_work() {
             // 更新温度
             self.update_temperature()?;
 
-            // 执行挖矿
-            let result = self.mine_work(&work).await?;
+            // 执行挖矿 - work现在是Arc<Work>，需要解引用
+            let result = self.mine_work(&*work).await?;
+
+            // 如果有结果通道且有结果，则通过通道立即发送
+            if let Some(ref sender) = self.result_sender {
+                if let Some(ref mining_result) = result {
+                    if let Err(_) = sender.send(mining_result.clone()) {
+                        warn!("设备 {} 结果通道发送失败", self.device_id());
+                    } else {
+                        debug!("设备 {} 结果已通过通道发送: work_id={}",
+                               self.device_id(), mining_result.work_id);
+                    }
+                }
+            }
 
             Ok(result)
         } else {
@@ -961,35 +1062,37 @@ impl MiningDevice for SoftwareDevice {
         // 🚀 移除批量统计刷新，改为即时统计，避免锁竞争阻塞工作线程
         // 原代码：if let Ok(mut updater) = self.batch_stats_updater.try_lock() { updater.force_flush(); }
 
-        // 更新cgminer风格的算力追踪器
+        // 🔧 修复：使用CGMiner风格的算力追踪器进行正确的算力计算
         self.hashrate_tracker.update_averages();
 
-        // 获取原始统计数据
-        let (total_hashes, start_time_nanos, last_update_nanos) = self.atomic_stats.get_raw_stats();
-
-        // 计算设备算力
-        let current_time_nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-
-        // 计算总体平均算力（基于总哈希数和总时间）
-        let total_elapsed = (current_time_nanos - start_time_nanos) as f64 / 1_000_000_000.0;
-        let average_hashrate = if total_elapsed > 0.0 {
-            total_hashes as f64 / total_elapsed
-        } else {
-            0.0
+        // 获取CGMiner风格的算力数据
+        let current_hashrate = {
+            let avg_5s_bits = self.hashrate_tracker.avg_5s.load(Ordering::Relaxed);
+            if avg_5s_bits != 0 {
+                f64::from_bits(avg_5s_bits) // 使用5秒平均算力作为当前算力
+            } else {
+                // 如果5秒平均还没有数据，使用总体平均
+                let total_hashes = self.hashrate_tracker.total_hashes.load(Ordering::Relaxed);
+                let total_elapsed = self.hashrate_tracker.start_time.elapsed().as_secs_f64();
+                if total_elapsed > 0.0 {
+                    total_hashes as f64 / total_elapsed
+                } else {
+                    0.0
+                }
+            }
         };
 
-        // 计算当前算力（使用平均算力作为当前算力的估计）
-        // 在真实的cgminer中，算力基于实际哈希计算，不依赖于是否找到解
-        let current_hashrate = if total_hashes > 0 && total_elapsed > 0.0 {
-            average_hashrate // 使用平均算力作为当前算力
-        } else {
-            0.0
+        let average_hashrate = {
+            let total_hashes = self.hashrate_tracker.total_hashes.load(Ordering::Relaxed);
+            let total_elapsed = self.hashrate_tracker.start_time.elapsed().as_secs_f64();
+            if total_elapsed > 0.0 {
+                total_hashes as f64 / total_elapsed
+            } else {
+                0.0
+            }
         };
 
-        // 使用计算出的算力创建统计信息
+        // 使用正确的算力数据创建统计信息
         let mut stats = self.atomic_stats.to_device_stats_with_hashrate(current_hashrate, average_hashrate);
 
         // 更新运行时间
@@ -999,6 +1102,7 @@ impl MiningDevice for SoftwareDevice {
 
         // 获取工作队列统计信息
         let queue_stats = self.work_queue.get_stats();
+        let total_hashes = self.hashrate_tracker.total_hashes.load(Ordering::Relaxed);
         debug!(
             "设备 {} 统计: 总哈希={}, 当前算力={:.2} H/s, 平均算力={:.2} H/s, 队列: 待处理={}, 活跃={}, 已完成={}",
             self.device_id(),
@@ -1103,6 +1207,11 @@ impl MiningDevice for SoftwareDevice {
         let error_rate_ok = stats.error_rate() < 0.1; // 错误率不超过10%
 
         Ok(status_ok && temp_ok && error_rate_ok)
+    }
+
+    /// 运行时类型转换支持
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

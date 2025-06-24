@@ -102,10 +102,11 @@ use tracing::{debug, info, warn};
 
 /// 无锁工作队列 - 消除工作分发中的锁竞争
 /// 使用crossbeam的无锁队列替换传统的Mutex<VecDeque>
+/// 使用Arc<Work>实现零拷贝
 #[derive(Debug)]
 pub struct LockFreeWorkQueue {
-    // 待处理工作队列（有界队列，防止内存溢出）
-    pending_work: Arc<ArrayQueue<Work>>,
+    // 待处理工作队列（有界队列，防止内存溢出）- 使用Arc<Work>实现零拷贝
+    pending_work: Arc<ArrayQueue<Arc<Work>>>,
     // 已完成工作队列（无界队列，结果需要及时处理）
     completed_work: Arc<SegQueue<MiningResult>>,
     // 活跃工作计数器
@@ -134,8 +135,8 @@ impl LockFreeWorkQueue {
         }
     }
 
-    /// 无锁入队工作 - 非阻塞操作
-    pub fn enqueue_work(&self, work: Work) -> Result<(), Work> {
+    /// 无锁入队工作 - 非阻塞操作，使用Arc<Work>实现零拷贝
+    pub fn enqueue_work(&self, work: Arc<Work>) -> Result<(), Arc<Work>> {
         match self.pending_work.push(work) {
             Ok(()) => {
                 self.active_work_count.fetch_add(1, Ordering::Relaxed);
@@ -145,18 +146,18 @@ impl LockFreeWorkQueue {
             }
             Err(work) => {
                 self.queue_full_count.fetch_add(1, Ordering::Relaxed);
-                warn!("工作队列已满，丢弃工作: {}", work.id);
+                warn!("工作队列已满，丢弃工作");
                 Err(work)
             }
         }
     }
 
-    /// 无锁出队工作 - 非阻塞操作
-    pub fn dequeue_work(&self) -> Option<Work> {
+    /// 无锁出队工作 - 非阻塞操作，返回Arc<Work>实现零拷贝
+    pub fn dequeue_work(&self) -> Option<Arc<Work>> {
         match self.pending_work.pop() {
             Some(work) => {
                 self.total_dequeued.fetch_add(1, Ordering::Relaxed);
-                debug!("工作成功出队: {}", work.id);
+                debug!("工作成功出队");
                 Some(work)
             }
             None => None,
@@ -433,7 +434,7 @@ mod tests {
         let queue = LockFreeWorkQueue::new(10);
 
         // 测试工作入队和出队
-        let work = Work::new("test_job_1".to_string(), [0u8; 32], [0u8; 80], 1.0);
+        let work = Arc::new(Work::new("test_job_1".to_string(), [0u8; 32], [0u8; 80], 1.0));
         assert!(queue.enqueue_work(work.clone()).is_ok());
 
         let dequeued = queue.dequeue_work();
@@ -449,9 +450,9 @@ mod tests {
         let queue = LockFreeWorkQueue::new(2);
 
         // 填满队列
-        let work1 = Work::new("test_job_1".to_string(), [0u8; 32], [0u8; 80], 1.0);
-        let work2 = Work::new("test_job_2".to_string(), [0u8; 32], [0u8; 80], 1.0);
-        let work3 = Work::new("test_job_3".to_string(), [0u8; 32], [0u8; 80], 1.0);
+        let work1 = Arc::new(Work::new("test_job_1".to_string(), [0u8; 32], [0u8; 80], 1.0));
+        let work2 = Arc::new(Work::new("test_job_2".to_string(), [0u8; 32], [0u8; 80], 1.0));
+        let work3 = Arc::new(Work::new("test_job_3".to_string(), [0u8; 32], [0u8; 80], 1.0));
 
         assert!(queue.enqueue_work(work1).is_ok());
         assert!(queue.enqueue_work(work2).is_ok());
@@ -469,9 +470,9 @@ mod tests {
         let stats1 = manager.register_device(1);
         let stats2 = manager.register_device(2);
 
-        // 更新统计
-        stats1.update_hashrate(1000, 1.0);
-        stats2.update_hashrate(2000, 1.0);
+        // 更新统计 - 记录哈希数而不是算力
+        stats1.record_hashes(1000);
+        stats2.record_hashes(2000);
 
         // 聚合统计
         let global_stats = manager.aggregate_stats();
@@ -488,7 +489,7 @@ mod tests {
             let queue_clone = queue.clone();
             let handle = thread::spawn(move || {
                 for j in 0..100 {
-                    let work = Work::new(format!("job_{}_{}", i, j), [0u8; 32], [0u8; 80], 1.0);
+                    let work = Arc::new(Work::new(format!("job_{}_{}", i, j), [0u8; 32], [0u8; 80], 1.0));
                     let _ = queue_clone.enqueue_work(work);
                 }
             });

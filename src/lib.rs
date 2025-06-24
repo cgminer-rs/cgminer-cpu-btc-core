@@ -102,6 +102,7 @@ pub mod concurrent_optimization;
 
 // 重新导出主要类型
 pub use factory::SoftwareCoreFactory;
+pub use factory::SoftwareCoreFactory as CpuBtcCoreFactory; // 为兼容性添加别名
 pub use core::SoftwareMiningCore;
 pub use device::SoftwareDevice;
 

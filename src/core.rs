@@ -458,6 +458,54 @@ impl SoftwareMiningCore {
 
         Ok(())
     }
+
+    /// 启动连续计算模式 - 让所有设备进入高性能连续计算状态
+    pub async fn start_continuous_mining(&mut self) -> Result<(), CoreError> {
+        info!("🚀 启动软算法核心的连续计算模式");
+
+        // 确保核心已经初始化
+        if self.config.is_none() {
+            return Err(CoreError::runtime("核心未初始化，无法启动连续计算模式".to_string()));
+        }
+
+        // 启动所有设备的连续计算模式
+        let mut devices = self.devices.lock().await;
+        let mut success_count = 0;
+        let device_count = devices.len();
+
+        for (device_id, device) in devices.iter_mut() {
+            // 尝试将设备转换为SoftwareDevice
+            if let Some(software_device) = device.as_any_mut().downcast_mut::<crate::device::SoftwareDevice>() {
+                match software_device.start_continuous_mining().await {
+                    Ok(()) => {
+                        success_count += 1;
+                        info!("✅ 设备 {} 连续计算模式启动成功", device_id);
+                    }
+                    Err(e) => {
+                        warn!("❌ 设备 {} 连续计算模式启动失败: {}", device_id, e);
+                    }
+                }
+            } else {
+                warn!("⚠️ 设备 {} 不是SoftwareDevice类型，跳过连续计算模式", device_id);
+            }
+        }
+
+        if success_count > 0 {
+            info!("🎉 连续计算模式启动完成: {}/{} 个设备成功启动", success_count, device_count);
+
+            // 更新核心状态
+            {
+                let mut running = self.running.write().map_err(|e| {
+                    CoreError::runtime(format!("Failed to acquire write lock: {}", e))
+                })?;
+                *running = true;
+            }
+
+            Ok(())
+        } else {
+            Err(CoreError::runtime("没有设备成功启动连续计算模式".to_string()))
+        }
+    }
 }
 
 #[async_trait]
@@ -568,19 +616,23 @@ impl MiningCore for SoftwareMiningCore {
         // 启动立即上报的结果收集任务
         self.start_result_collection().await?;
 
-        // 启动所有设备
+        // 启动所有设备 - 🚀 切换到高性能连续计算模式
         {
             let mut devices = self.devices.lock().await;
             for (device_id, device) in devices.iter_mut() {
-                if let Err(e) = device.start().await {
-                    error!("启动设备 {} 失败: {}", device_id, e);
-                    // 继续启动其他设备，不因为一个设备失败而停止
+                // 使用 as_any_mut 和 downcast_mut 来安全地调用具体类型的实现
+                if let Some(sw_device) = device.as_any_mut().downcast_mut::<SoftwareDevice>() {
+                    if let Err(e) = sw_device.start_continuous_mining().await {
+                        error!("启动设备 {} 的连续计算模式失败: {}", device_id, e);
+                    }
+                } else {
+                    error!("设备 {} 不是一个有效的 SoftwareDevice 实例", device_id);
                 }
             }
         }
 
         self.start_time = Some(SystemTime::now());
-        info!("优化CPU挖矿核心启动完成 - 立即上报已启用");
+        info!("优化CPU挖矿核心启动完成 - 🚀 已切换到高性能连续计算模式");
         Ok(())
     }
 
@@ -713,14 +765,14 @@ impl MiningCore for SoftwareMiningCore {
     }
 
     /// 提交工作到所有设备
-    async fn submit_work(&mut self, work: Work) -> Result<(), CoreError> {
+    async fn submit_work(&mut self, work: std::sync::Arc<Work>) -> Result<(), CoreError> {
         let mut devices = self.devices.lock().await;
         let device_count = devices.len();
         let mut success_count = 0;
         let mut failed_devices = Vec::new();
 
         for (device_id, device) in devices.iter_mut() {
-            match device.submit_work(work.clone()).await {
+            match device.submit_work(Arc::clone(&work)).await {
                 Ok(()) => {
                     success_count += 1;
                 }
