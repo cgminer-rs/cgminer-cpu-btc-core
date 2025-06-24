@@ -55,7 +55,7 @@
 
 use cgminer_core::{
     MiningDevice, DeviceInfo, DeviceConfig, DeviceStatus, DeviceStats,
-    Work, MiningResult, DeviceError
+    Work, MiningResult, DeviceError, CgminerHashrateTracker
 };
 use crate::cpu_affinity::CpuAffinityManager;
 use crate::platform_optimization;
@@ -325,7 +325,7 @@ pub struct SoftwareDevice {
     /// 无锁工作队列 - 替换Mutex<Option<Work>>
     work_queue: Arc<crate::concurrent_optimization::LockFreeWorkQueue>,
     /// cgminer风格的算力追踪器
-    hashrate_tracker: Arc<HashrateTracker>,
+    hashrate_tracker: Arc<CgminerHashrateTracker>,
     /// 目标算力 (hashes per second)
     target_hashrate: f64,
     /// 错误率
@@ -378,7 +378,7 @@ impl SoftwareDevice {
         ));
 
         // 创建cgminer风格的算力追踪器
-        let hashrate_tracker = Arc::new(HashrateTracker::new());
+        let hashrate_tracker = Arc::new(CgminerHashrateTracker::new());
 
         // 创建温度管理器（仅在支持真实温度监控时）
         let temp_config = TemperatureConfig::default();
@@ -430,7 +430,7 @@ impl SoftwareDevice {
         ));
 
         // 创建cgminer风格的算力追踪器
-        let hashrate_tracker = Arc::new(HashrateTracker::new());
+        let hashrate_tracker = Arc::new(CgminerHashrateTracker::new());
 
         // 创建温度管理器
         let temp_config = TemperatureConfig::default();
@@ -472,7 +472,7 @@ impl SoftwareDevice {
         error_rate: f64,
         batch_size: u32,
         atomic_stats: &Arc<AtomicStats>,
-        hashrate_tracker: &Arc<HashrateTracker>,
+        hashrate_tracker: &Arc<CgminerHashrateTracker>,
         result_sender: &Option<mpsc::UnboundedSender<MiningResult>>,
         last_mining_time: &Arc<RwLock<Option<Instant>>>,
     ) -> Result<Option<MiningResult>, DeviceError> {
@@ -1070,31 +1070,14 @@ impl MiningDevice for SoftwareDevice {
         self.hashrate_tracker.update_averages();
 
         // 获取CGMiner风格的算力数据
-        let current_hashrate = {
-            let avg_5s_bits = self.hashrate_tracker.avg_5s.load(Ordering::Relaxed);
-            if avg_5s_bits != 0 {
-                f64::from_bits(avg_5s_bits) // 使用5秒平均算力作为当前算力
-            } else {
-                // 如果5秒平均还没有数据，使用总体平均
-                let total_hashes = self.hashrate_tracker.total_hashes.load(Ordering::Relaxed);
-                let total_elapsed = self.hashrate_tracker.start_time.elapsed().as_secs_f64();
-                if total_elapsed > 0.0 {
-                    total_hashes as f64 / total_elapsed
-                } else {
-                    0.0
-                }
-            }
+        let (avg_5s, _, _, _, avg_total) = self.hashrate_tracker.get_hashrates();
+        let current_hashrate = if avg_5s > 0.0 {
+            avg_5s // 使用5秒平均算力作为当前算力
+        } else {
+            avg_total // 如果5秒平均还没有数据，使用总体平均
         };
 
-        let average_hashrate = {
-            let total_hashes = self.hashrate_tracker.total_hashes.load(Ordering::Relaxed);
-            let total_elapsed = self.hashrate_tracker.start_time.elapsed().as_secs_f64();
-            if total_elapsed > 0.0 {
-                total_hashes as f64 / total_elapsed
-            } else {
-                0.0
-            }
-        };
+        let average_hashrate = avg_total;
 
         // 使用正确的算力数据创建统计信息
         let mut stats = self.atomic_stats.to_device_stats_with_hashrate(current_hashrate, average_hashrate);
@@ -1106,7 +1089,7 @@ impl MiningDevice for SoftwareDevice {
 
         // 获取工作队列统计信息
         let queue_stats = self.work_queue.get_stats();
-        let total_hashes = self.hashrate_tracker.total_hashes.load(Ordering::Relaxed);
+        let total_hashes = self.hashrate_tracker.get_total_hashes();
         debug!(
             "设备 {} 统计: 总哈希={}, 当前算力={:.2} H/s, 平均算力={:.2} H/s, 队列: 待处理={}, 活跃={}, 已完成={}",
             self.device_id(),
@@ -1216,143 +1199,5 @@ impl MiningDevice for SoftwareDevice {
     /// 运行时类型转换支持
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
         self
-    }
-}
-
-// 🔧 CGMiner风格的算力追踪器
-#[derive(Debug)]
-pub struct HashrateTracker {
-    total_hashes: AtomicU64,
-    start_time: std::time::Instant,
-    last_update_time: AtomicU64, // 纳秒时间戳
-
-    // 指数衰减平均算力 (哈希/秒)
-    avg_5s: AtomicU64,   // f64 as u64 bits
-    avg_1m: AtomicU64,
-    avg_5m: AtomicU64,
-    avg_15m: AtomicU64,
-
-    // 统计数据
-    accepted_shares: AtomicU64,
-    rejected_shares: AtomicU64,
-    hardware_errors: AtomicU64,
-}
-
-impl HashrateTracker {
-    pub fn new() -> Self {
-        let now = std::time::Instant::now();
-        Self {
-            total_hashes: AtomicU64::new(0),
-            start_time: now,
-            last_update_time: AtomicU64::new(now.elapsed().as_nanos() as u64),
-            avg_5s: AtomicU64::new(0),
-            avg_1m: AtomicU64::new(0),
-            avg_5m: AtomicU64::new(0),
-            avg_15m: AtomicU64::new(0),
-            accepted_shares: AtomicU64::new(0),
-            rejected_shares: AtomicU64::new(0),
-            hardware_errors: AtomicU64::new(0),
-        }
-    }
-
-    /// 添加哈希数 - 挖矿线程调用，最小开销
-    pub fn add_hashes(&self, hashes: u64) {
-        self.total_hashes.fetch_add(hashes, Ordering::Relaxed);
-    }
-
-    /// 更新指数衰减平均算力 - 统计线程调用
-    pub fn update_averages(&self) {
-        let now_nanos = self.start_time.elapsed().as_nanos() as u64;
-        let last_update = self.last_update_time.load(Ordering::Relaxed);
-
-        if now_nanos <= last_update {
-            return; // 避免时间倒流
-        }
-
-        let elapsed_secs = (now_nanos - last_update) as f64 / 1_000_000_000.0;
-        if elapsed_secs < 0.1 {
-            return; // 更新太频繁，跳过
-        }
-
-        let total_hashes = self.total_hashes.load(Ordering::Relaxed);
-        let total_elapsed = self.start_time.elapsed().as_secs_f64();
-
-        if total_elapsed <= 0.0 {
-            return;
-        }
-
-        // 当前瞬时算力
-        let current_hashrate = total_hashes as f64 / total_elapsed;
-
-        // 指数衰减因子 (基于cgminer的实现)
-        let alpha_5s = 1.0 - (-elapsed_secs / 5.0).exp();
-        let alpha_1m = 1.0 - (-elapsed_secs / 60.0).exp();
-        let alpha_5m = 1.0 - (-elapsed_secs / 300.0).exp();
-        let alpha_15m = 1.0 - (-elapsed_secs / 900.0).exp();
-
-        // 更新指数衰减平均值
-        self.update_ema(&self.avg_5s, current_hashrate, alpha_5s);
-        self.update_ema(&self.avg_1m, current_hashrate, alpha_1m);
-        self.update_ema(&self.avg_5m, current_hashrate, alpha_5m);
-        self.update_ema(&self.avg_15m, current_hashrate, alpha_15m);
-
-        // 更新时间戳
-        self.last_update_time.store(now_nanos, Ordering::Relaxed);
-    }
-
-    fn update_ema(&self, atomic_avg: &AtomicU64, current_value: f64, alpha: f64) {
-        let old_bits = atomic_avg.load(Ordering::Relaxed);
-        let old_value = if old_bits == 0 {
-            current_value // 初始值
-        } else {
-            f64::from_bits(old_bits)
-        };
-
-        let new_value = old_value + alpha * (current_value - old_value);
-        atomic_avg.store(new_value.to_bits(), Ordering::Relaxed);
-    }
-
-    /// 获取CGMiner风格的算力字符串
-    pub fn get_cgminer_hashrate_string(&self) -> String {
-        let avg_5s = f64::from_bits(self.avg_5s.load(Ordering::Relaxed));
-        let avg_1m = f64::from_bits(self.avg_1m.load(Ordering::Relaxed));
-        let avg_5m = f64::from_bits(self.avg_5m.load(Ordering::Relaxed));
-        let avg_15m = f64::from_bits(self.avg_15m.load(Ordering::Relaxed));
-
-        let total_hashes = self.total_hashes.load(Ordering::Relaxed);
-        let total_elapsed = self.start_time.elapsed().as_secs_f64();
-        let avg_total = if total_elapsed > 0.0 {
-            total_hashes as f64 / total_elapsed
-        } else {
-            0.0
-        };
-
-        let accepted = self.accepted_shares.load(Ordering::Relaxed);
-        let rejected = self.rejected_shares.load(Ordering::Relaxed);
-        let hw_errors = self.hardware_errors.load(Ordering::Relaxed);
-
-        format!(
-            "(5s):{:.2}M (1m):{:.2}M (5m):{:.2}M (15m):{:.2}M (avg):{:.2}Mh/s A:{} R:{} HW:{}",
-            avg_5s / 1_000_000.0,
-            avg_1m / 1_000_000.0,
-            avg_5m / 1_000_000.0,
-            avg_15m / 1_000_000.0,
-            avg_total / 1_000_000.0,
-            accepted,
-            rejected,
-            hw_errors
-        )
-    }
-
-    pub fn increment_accepted(&self) {
-        self.accepted_shares.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn increment_rejected(&self) {
-        self.rejected_shares.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn increment_hardware_error(&self) {
-        self.hardware_errors.fetch_add(1, Ordering::Relaxed);
     }
 }
