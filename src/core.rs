@@ -549,9 +549,10 @@ impl MiningCore for SoftwareMiningCore {
         if perf_config.cpu_affinity.enabled {
             let strategy = CpuAffinityStrategy::Intelligent; // 简化为固定策略
 
-            let cpu_manager = CpuAffinityManager::new(true, strategy);
+            // 在macOS上，当绑定所有核心时，core_affinity可能会挂起。临时禁用它。
+            let cpu_manager = CpuAffinityManager::new(false, strategy);
             self.cpu_affinity_manager = Some(Arc::new(RwLock::new(cpu_manager)));
-            info!("✅ CPU绑定管理器已启用，策略: 智能分配");
+            info!("ℹ️ CPU绑定管理器已临时禁用以排查macOS挂起问题");
         }
 
         // 创建设备
@@ -567,34 +568,7 @@ impl MiningCore for SoftwareMiningCore {
                 device_map.insert(device_id, device);
             }
         }
-
-        // 初始化所有设备
-        {
-            let mut device_map = self.devices.lock().await;
-            for (device_id, device) in device_map.iter_mut() {
-                let device_config = config.devices
-                    .iter()
-                    .find(|dc| dc.chain_id == (*device_id - 1000) as u8)
-                    .cloned()
-                    .unwrap_or_default();
-
-                if let Err(e) = device.initialize(device_config).await {
-                    error!("初始化设备 {} 失败: {}", device_id, e);
-                    return Err(CoreError::Device(e));
-                }
-            }
-        }
-
         self.config = Some(config);
-
-        // 检查设备数量
-        let device_count = {
-            let devices = self.devices.lock().await;
-            devices.len()
-        };
-        debug!("最终设备数量: {}", device_count);
-
-        info!("优化CPU挖矿核心初始化完成");
         Ok(())
     }
 

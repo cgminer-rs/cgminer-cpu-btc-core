@@ -783,6 +783,10 @@ impl SoftwareDevice {
                 // 批次完成后更新统计
                 atomic_stats.record_hashes(hashes_done_in_batch);
                 hashrate_tracker.add_hashes(hashes_done_in_batch);
+
+                // 在完成一个批次后，让出CPU给其他任务
+                // 这可以防止在高负载下某些任务（如统计）被饿死
+                tokio::task::yield_now().await;
             }
 
             info!("🏁 设备 {} 连续计算完成", device_id);
